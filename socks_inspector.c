@@ -9,6 +9,7 @@
 #include <stdbool.h>
 #include <netinet/ip.h>
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include <poll.h>
 #include <sys/time.h>
@@ -133,6 +134,9 @@ int main(int argc, char *argv[]) {
 			int clientlen = sizeof(clientaddr);
 			clientfd = accept(listenfd, (struct sockaddr*) &clientaddr, &clientlen);
 			if(clientfd > 0) {
+				if(fcntl(clientfd, F_SETFL, fcntl(clientfd, F_GETFL, 0) | O_NONBLOCK) < 0) { // make the clientfd non-blocking
+					exit(-1); // unknown fcntl() error
+				}
 				char client_ip[INET_ADDRSTRLEN];
 				inet_ntop(AF_INET, &clientaddr.sin_addr, client_ip, sizeof(client_ip)); // convert client ip to string
 				gettimeofday(&current_time, NULL), printf("[%.6f] (ACK) CONNECTION REQUEST ACCEPTED from %s:%d\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), client_ip, ntohs(clientaddr.sin_port));
