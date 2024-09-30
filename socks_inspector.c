@@ -197,7 +197,7 @@ int main(int argc, char *argv[]) {
 										request_reply.bnd_address[2] = request_details.dst_address[2];
 										request_reply.bnd_address[3] = request_details.dst_address[3];
 										request_reply.bnd_port = request_details.dst_port;
-										if(write(clientfd, &request_reply, sizeof(request_reply)) < 0) { // send method selection to client (no methods accepted)
+										if(write(clientfd, &request_reply, sizeof(request_reply)) < 0) { // send reply (0x00 for connection succeded)
 											exit(-1); // unknown write() error
 										}
 										timeout_return = timeout(clientfd, POLLIN, 10000); // wait 10 seconds for an answer (the actual package to echo and/or forward)
@@ -272,10 +272,10 @@ int main(int argc, char *argv[]) {
 										request_reply.bnd_address[2] = 0x00;
 										request_reply.bnd_address[3] = 0x00;
 										request_reply.bnd_port = 0x00;
-										if(write(clientfd, &request_reply, sizeof(request_reply)) < 0) { // send method selection to client (no methods accepted)
+										if(write(clientfd, &request_reply, sizeof(request_reply)) < 0) { // send reply (0x08 : address type not supported)
 											exit(-1); // unknown write() error
 										}
-										if(shutdown(clientfd, SHUT_RDWR) < 0) {
+										if(shutdown(clientfd, SHUT_RDWR) < 0) { // immediately close the connection after that (as described in RFC 1928)
 											exit(-1); // unknown shutdown() error
 										}
 										if(close(clientfd) < 0) {
@@ -293,10 +293,10 @@ int main(int argc, char *argv[]) {
 									request_reply.bnd_address[2] = 0x00;
 									request_reply.bnd_address[3] = 0x00;
 									request_reply.bnd_port = 0x00;
-									if(write(clientfd, &request_reply, sizeof(request_reply)) < 0) { // send method selection to client (no methods accepted)
+									if(write(clientfd, &request_reply, sizeof(request_reply)) < 0) { // send reply (0x07 : command not supported)
 										exit(-1); // unknown write() error
 									}
-									if(shutdown(clientfd, SHUT_RDWR) < 0) {
+									if(shutdown(clientfd, SHUT_RDWR) < 0) { // immediately close the connection after that (as described in RFC 1928)
 										exit(-1); // unknown shutdown() error
 									}
 									if(close(clientfd) < 0) {
