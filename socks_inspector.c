@@ -92,6 +92,20 @@ int main(int argc, char *argv[]) {
 		uint16_t listen_port = atoi(argv[argv_pos+1]); // the argument after the found --port is used as port number
 		listenfd = open_socket((bool) true, INADDR_ANY, listen_port);
 	}
+	bool logging;
+	char *logpath;
+	size_t logpath_strsize;
+	argv_pos = check_argv(argc, argv, "--log");
+	if(argv_pos == -1) {
+		gettimeofday(&current_time, NULL), printf("[%.6f] logging disabled : only echo the package content\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+	} else {
+		// logging enabled
+		gettimeofday(&current_time, NULL), printf("[%.6f] logging enabled : writing to %s\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), argv[argv_pos+1]);
+		logpath_strsize = sizeof(argv[argv_pos+1]);
+		logpath = (char *) malloc(logpath_strsize * sizeof(char));
+		strcpy(logpath, argv[argv_pos+1]);
+		logging = true;
+	}
 
 	short timeout_return; // the value returned by timeout()
 	char package[16384]; // 16KiB buffer used for receiving packages into that buffer
@@ -126,6 +140,8 @@ int main(int argc, char *argv[]) {
 	} SOCKS5_request_reply;
 	SOCKS5_request_reply request_reply;
 
+	FILE *logfile; // used if logging is enabled with --log shell argument
+	
 	while(1) { // infinite server loop
 
 		// the listening socket needs to be non blocking! if not the read syscall blocks until there is something to read and that makes custom timeout implementation impossible
@@ -212,11 +228,29 @@ int main(int argc, char *argv[]) {
 											if(write(STDOUT, "\n", 1) < 0) { // linefeed after EOF
 												exit(-1); // unknown write() error
 											}
-											argv_pos = check_argv(argc, argv, "--log");
-											if(argv_pos != -1) {
+											if(logging == true) {
 												// log the package content to a text file based on the path in the argument
 												// if the content is somehow encrypted you need to decrypt it yourself
 												// path is argv[argv_pos+1]
+												char filename[sizeof(client_ip)];
+												strcpy(filename, client_ip);
+												for(int count = 0; count < sizeof(filename); count++) { // construct the filename
+													if(filename[count] == '.') {
+														filename[count] = '_';
+													}
+												}
+												char full_path[logpath_strsize+sizeof(filename)];
+												strcpy(full_path, logpath);
+												if(logpath[logpath_strsize-1] == '/') { // if last char of path is / then just append the filename
+													strcat(full_path, filename);
+												} else { // else first append / and then the filename for a correct full_path
+													strcat(full_path, "/");
+													strcat(full_path, filename);
+												}
+												logfile = fopen(full_path, "a");
+												fprintf(logfile, "\nRequest:\n====================\n\n");
+												fprintf(logfile, package);
+												fprintf(logfile, "\n");
 											}
 											if(check_argv(argc, argv, "--forward") != -1) {
 												// forwarding and answer processing
@@ -249,10 +283,16 @@ int main(int argc, char *argv[]) {
 													exit(-1); // unknown close() error
 												}
 												*/
+												fprintf(logfile, "\nAnswer:\n====================\n\n");
+												fprintf(logfile, package);
+												fprintf(logfile, "\n");
 											} else {
 												gettimeofday(&current_time, NULL), printf("[%.6f] forwarding of package disabled : --forward not set\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
 											}
-											// after the printing and possible forwarding and answer processing, close the connection to the client (non-persistent)
+											// after the printing, possible forwarding and answer processing, close log file (if logging is enabled) and the connection to the client (non-persistent)
+											if(fclose(logfile) != 0) { // close the log file (every connection got its own)
+												exit(-1); // unknown fclose() error
+											}
 											if(shutdown(clientfd, SHUT_RDWR) < 0) {
 												exit(-1); // unknown shutdown() error
 											}
