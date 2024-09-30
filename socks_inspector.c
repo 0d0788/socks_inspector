@@ -202,14 +202,24 @@ int main(int argc, char *argv[]) {
 										}
 										timeout_return = timeout(clientfd, POLLIN, 10000); // wait 10 seconds for an answer (the actual package to echo and/or forward)
 										if(timeout_return == POLLIN) { // the answer came in
-											if(check_argv(argc, argv, "--echo") != -1) {
-												gettimeofday(&current_time, NULL), printf("[%.6f] PACKAGE CONTENT :\n\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
-												write(STDOUT, package, sizeof(package)); // print the package
-												write(STDOUT, "\n", 1); // linefeed after EOF
-											} else {
-												gettimeofday(&current_time, NULL), printf("[%.6f] printing of package content disabled : --echo not set\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+											if(read(clientfd, package, sizeof(package)) < 0) {
+												exit(-1); // unknown read() error (too lazy to write further errno handling lol)
+											}
+											gettimeofday(&current_time, NULL), printf("[%.6f] PACKAGE CONTENT :\n\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+											if(write(STDOUT, package, sizeof(package)) < 0) { // print the package
+												exit(-1); // unknown write() error
+											}
+											if(write(STDOUT, "\n", 1) < 0) { // linefeed after EOF
+												exit(-1); // unknown write() error
+											}
+											argv_pos = check_argv(argc, argv, "--log");
+											if(argv_pos != -1) {
+												// log the package content to a text file based on the path in the argument
+												// if the content is somehow encrypted you need to decrypt it yourself
+												// path is argv[argv_pos+1]
 											}
 											if(check_argv(argc, argv, "--forward") != -1) {
+												// forwarding and answer processing
 												/*
 												gettimeofday(&current_time, NULL), printf("[%.6f] FORWARDING TO DEST...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
 												// cast the package to a structure representing the package content and change or check values (if needed)
@@ -241,15 +251,13 @@ int main(int argc, char *argv[]) {
 												*/
 											} else {
 												gettimeofday(&current_time, NULL), printf("[%.6f] forwarding of package disabled : --forward not set\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
-												// close connection to client (non-persistent behavior)
-												/*
-												if(shutdown(clientfd, SHUT_RDWR) < 0) {
-													exit(-1); // unknown shutdown() error
-												}
-												if(close(clientfd) < 0) {
-													exit(-1); // unknown close() error
-												}
-												*/
+											}
+											// after the printing and possible forwarding and answer processing, close the connection to the client (non-persistent)
+											if(shutdown(clientfd, SHUT_RDWR) < 0) {
+												exit(-1); // unknown shutdown() error
+											}
+											if(close(clientfd) < 0) {
+												exit(-1); // unknown close() error
 											}
 										}
 										else if(timeout_return == 0) { // answer didn't came in after 10 secs
