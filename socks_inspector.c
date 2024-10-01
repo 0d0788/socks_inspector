@@ -290,8 +290,10 @@ int main(int argc, char *argv[]) {
 												gettimeofday(&current_time, NULL), printf("[%.6f] forwarding of package disabled : --forward not set\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
 											}
 											// after the printing, possible forwarding and answer processing, close log file (if logging is enabled) and the connection to the client (non-persistent)
-											if(fclose(logfile) != 0) { // close the log file (every connection got its own)
-												exit(-1); // unknown fclose() error
+											if(logging == true) {
+												if(fclose(logfile) != 0) { // close the log file (every connection got its own)
+													exit(-1); // unknown fclose() error
+												}
 											}
 											if(shutdown(clientfd, SHUT_RDWR) < 0) {
 												exit(-1); // unknown shutdown() error
