@@ -297,9 +297,11 @@ int main(int argc, char *argv[]) {
 													exit(-1); // unknown close() error
 												}
 												*/
-												fprintf(logfile, "\nAnswer:\n====================\n\n");
-												fprintf(logfile, package);
-												fprintf(logfile, "\n");
+												if(logging == true) {
+													fprintf(logfile, "\nAnswer:\n====================\n\n");
+													fprintf(logfile, package);
+													fprintf(logfile, "\n");
+												}
 											}
 											// after the printing, possible forwarding and answer processing, close log file (if logging is enabled) and the connection to the client (non-persistent)
 											if(logging == true) {
