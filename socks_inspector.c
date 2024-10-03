@@ -13,6 +13,7 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <poll.h>
+#include <ctype.h>
 #include <sys/time.h>
 
 #define STDOUT 1
@@ -98,13 +99,22 @@ int main(int argc, char *argv[]) {
 	argv_pos = check_argv(argc, argv, "--log");
 	if(argv_pos == -1) {
 		gettimeofday(&current_time, NULL), printf("[%.6f] logging disabled : only echo the package content\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+		logging = false;
 	} else {
 		// logging enabled
 		gettimeofday(&current_time, NULL), printf("[%.6f] logging enabled : writing to %s\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), argv[argv_pos+1]);
 		logpath_strsize = sizeof(argv[argv_pos+1]);
 		logpath = (char *) malloc(logpath_strsize * sizeof(char));
 		strcpy(logpath, argv[argv_pos+1]);
-		logging = true;
+		logging = false;
+	}
+	bool forward;
+	argv_pos = check_argv(argc, argv, "--forward");
+	if(argv_pos == -1) {
+		gettimeofday(&current_time, NULL), printf("[%.6f] forwarding of package disabled : --forward not set\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+		forward = false;
+	} else {
+		forward = true;
 	}
 
 	short timeout_return; // the value returned by timeout()
@@ -203,7 +213,7 @@ int main(int argc, char *argv[]) {
 								request_details.dst_address[3] = *(package+7);
 								request_details.dst_port = ((uint16_t) *(package+8) << 8) | *(package+9);
 								if(request_details.command == 0x01) { // check if the command in the request details is CONNECT
-									if(request_details.address_type == 0x01) { // check if the address type in the request details is IPv4
+									if(request_details.address_type == 0x01 || request_details.address_type == 0x03) { // check if the address type in the request details is IPv4 or DOMAINNAME
 										request_reply.version = 0x05;
 										request_reply.reply_code = 0x00; // connection succeeded
 										request_reply.reserved = 0x00;
@@ -221,11 +231,15 @@ int main(int argc, char *argv[]) {
 											if(read(clientfd, package, sizeof(package)) < 0) {
 												exit(-1); // unknown read() error (too lazy to write further errno handling lol)
 											}
-											gettimeofday(&current_time, NULL), printf("[%.6f] PACKAGE CONTENT :\n\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
-											if(write(STDOUT, package, sizeof(package)) < 0) { // print the package
-												exit(-1); // unknown write() error
+											gettimeofday(&current_time, NULL), printf("[%.6f] PACKAGE CONTENT (printable chars) :\n\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+											for(int count = 0; count < sizeof(package); count++) {
+												if(isprint(package[count]) != 0) { // check if the char is printable
+													if(write(STDOUT, package+count, sizeof(package[count])) < 0) { // print the printable char
+														exit(-1); // unknown write() error
+													}
+												}
 											}
-											if(write(STDOUT, "\n", 1) < 0) { // linefeed after EOF
+											if(write(STDOUT, "\n\n", 2) < 0) { // double linefeed after EOF
 												exit(-1); // unknown write() error
 											}
 											if(logging == true) {
@@ -252,7 +266,7 @@ int main(int argc, char *argv[]) {
 												fprintf(logfile, package);
 												fprintf(logfile, "\n");
 											}
-											if(check_argv(argc, argv, "--forward") != -1) {
+											if(forward == true) {
 												// forwarding and answer processing
 												/*
 												gettimeofday(&current_time, NULL), printf("[%.6f] FORWARDING TO DEST...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
@@ -286,8 +300,6 @@ int main(int argc, char *argv[]) {
 												fprintf(logfile, "\nAnswer:\n====================\n\n");
 												fprintf(logfile, package);
 												fprintf(logfile, "\n");
-											} else {
-												gettimeofday(&current_time, NULL), printf("[%.6f] forwarding of package disabled : --forward not set\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
 											}
 											// after the printing, possible forwarding and answer processing, close log file (if logging is enabled) and the connection to the client (non-persistent)
 											if(logging == true) {
