@@ -106,7 +106,7 @@ int main(int argc, char *argv[]) {
 		logpath_strsize = sizeof(argv[argv_pos+1]);
 		logpath = (char *) malloc(logpath_strsize * sizeof(char));
 		strcpy(logpath, argv[argv_pos+1]);
-		logging = false;
+		logging = true;
 	}
 	bool forward;
 	argv_pos = check_argv(argc, argv, "--forward");
