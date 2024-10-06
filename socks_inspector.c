@@ -14,6 +14,9 @@
 #include <unistd.h>
 #include <poll.h>
 #include <ctype.h>
+#include <sys/types.h>
+#include <dirent.h>
+#include <errno.h>
 #include <sys/time.h>
 
 #define STDOUT 1
@@ -89,9 +92,27 @@ int main(int argc, char *argv[]) {
 		gettimeofday(&current_time, NULL), printf("[%.6f] no port number specified: using default value 1080\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
 		listenfd = open_socket((bool) true, INADDR_ANY, (uint16_t) 1080);
 	} else {
-		gettimeofday(&current_time, NULL), printf("[%.6f] using port number : %s\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), argv[argv_pos+1]);
-		uint16_t listen_port = atoi(argv[argv_pos+1]); // the argument after the found --port is used as port number
-		listenfd = open_socket((bool) true, INADDR_ANY, listen_port);
+		if(argc < argv_pos+2) { // check if there is value after --port argument
+			gettimeofday(&current_time, NULL), printf("[%.6f] no port number after --port argument : returning\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+			exit(1);
+		} else {
+			char *s = argv[argv_pos+1];
+			while (*s) { // check if that value is an actual port (numeric) and not something else
+				if (isdigit(*s) == 0) {
+					gettimeofday(&current_time, NULL), printf("[%.6f] port number specified after --port argument is not numeric : returning\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+					exit(1);
+				} else {
+					s++;
+				}
+			}
+			int listen_port = atoi(argv[argv_pos+1]); // the argument after the found --port is used as port number
+			if(listen_port > 65535) { // check if the selected port is higher than the max port
+				gettimeofday(&current_time, NULL), printf("[%.6f] specified port number is higher than 65535 (max port) : returning\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+				exit(1);
+			}
+			gettimeofday(&current_time, NULL), printf("[%.6f] using port number : %u\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), listen_port);
+			listenfd = open_socket((bool) true, INADDR_ANY, listen_port);
+		}
 	}
 	bool logging;
 	char *logpath;
@@ -102,11 +123,31 @@ int main(int argc, char *argv[]) {
 		logging = false;
 	} else {
 		// logging enabled
-		gettimeofday(&current_time, NULL), printf("[%.6f] logging enabled : writing to %s\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), argv[argv_pos+1]);
-		logpath_strsize = sizeof(argv[argv_pos+1]);
-		logpath = (char *) malloc(logpath_strsize * sizeof(char));
-		strcpy(logpath, argv[argv_pos+1]);
-		logging = true;
+		if(argc < argv_pos+2) { // check if there is a file path after --log argument
+			gettimeofday(&current_time, NULL), printf("[%.6f] no path behind --log argument : returning\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+			exit(1);
+		} else {
+			DIR* logdir;
+			if((logdir = opendir(argv[argv_pos+1])) == NULL) { // check if the dir behind --log is usable
+				switch(errno) {
+					case EACCES:
+						gettimeofday(&current_time, NULL), printf("[%.6f] permission denied to open dir behind --log argument : returning\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+						exit(1);
+					case ENOENT:
+						gettimeofday(&current_time, NULL), printf("[%.6f] dir behind --log argument does not exist : returning\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+						exit(1);
+					case ENOTDIR:
+						gettimeofday(&current_time, NULL), printf("[%.6f] dir behind --log argument is not a dir : returning\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+						exit(1);
+				}
+			} else { // is usable
+				gettimeofday(&current_time, NULL), printf("[%.6f] logging enabled : writing to %s\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), argv[argv_pos+1]);
+				logpath_strsize = sizeof(argv[argv_pos+1]);
+				logpath = (char *) malloc(logpath_strsize * sizeof(char));
+				strcpy(logpath, argv[argv_pos+1]);
+				logging = true;
+			}
+		}
 	}
 	bool forward;
 	argv_pos = check_argv(argc, argv, "--forward");
@@ -166,10 +207,10 @@ int main(int argc, char *argv[]) {
 			if(clientfd > 0) {
 				char client_ip[INET_ADDRSTRLEN];
 				inet_ntop(AF_INET, &clientaddr.sin_addr, client_ip, sizeof(client_ip)); // convert client ip to string
-				gettimeofday(&current_time, NULL), printf("[%.6f] (ACK) CONNECTION REQUEST ACCEPTED from %s:%d\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), client_ip, ntohs(clientaddr.sin_port));
+				gettimeofday(&current_time, NULL), printf("[%.6f] (ACK) CONNECTION REQUEST ACCEPTED from %s:%u\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), client_ip, ntohs(clientaddr.sin_port));
 				timeout_return = timeout(clientfd, POLLIN, 10000); // wait 10 seconds for the SOCKS5 greeting from client
 				if(timeout_return == POLLIN) { // there is a package from a connected client
-					gettimeofday(&current_time, NULL), printf("[%.6f] starting SOCKS5 handshake for %s:%d\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), client_ip, ntohs(clientaddr.sin_port));
+					gettimeofday(&current_time, NULL), printf("[%.6f] starting SOCKS5 handshake for %s:%u\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), client_ip, ntohs(clientaddr.sin_port));
 					if(read(clientfd, package, sizeof(package)) < 0) {
 						exit(-1); // unknown read() error
 					}
@@ -317,7 +358,7 @@ int main(int argc, char *argv[]) {
 											}
 										}
 										else if(timeout_return == 0) { // answer didn't came in after 10 secs
-											gettimeofday(&current_time, NULL), printf("[%.6f] no further input from %s:%d : timeout\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), client_ip, ntohs(clientaddr.sin_port));
+											gettimeofday(&current_time, NULL), printf("[%.6f] no further input from %s:%u : timeout\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), client_ip, ntohs(clientaddr.sin_port));
 											if(shutdown(clientfd, SHUT_RDWR) < 0) {
 												exit(-1); // unknown shutdown() error
 											}
