@@ -63,7 +63,7 @@ short timeout(int socketfd, short event, int timeout) { // poll() helper to redu
 		return 0; // timeout
 	}
 	if(poll_return < 0) {
-		exit(-1); // unknown poll()	error
+		exit(-1); // unknown poll() error
 	}
 }
 
@@ -85,6 +85,7 @@ int main(int argc, char *argv[]) {
 	int listenfd; // connection queue
 	int clientfd; // accepted incoming connection from listenfd
 	int destfd; // destination where packages are forwarded to (if enabled)
+	char client_ip[INET_ADDRSTRLEN]; // ip address of the client
 	
 	// handling shell arguments
 	int argv_pos = check_argv(argc, argv, "--port");
@@ -116,19 +117,17 @@ int main(int argc, char *argv[]) {
 	}
 	bool logging;
 	char *logpath;
-	size_t logpath_strsize;
 	argv_pos = check_argv(argc, argv, "--log");
 	if(argv_pos == -1) {
 		gettimeofday(&current_time, NULL), printf("[%.6f] logging disabled : only echo the package content\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
 		logging = false;
 	} else {
 		// logging enabled
-		if(argc < argv_pos+2) { // check if there is a file path after --log argument
+		if(argc < argv_pos+2) { // check if there is something after --log argument
 			gettimeofday(&current_time, NULL), printf("[%.6f] no path behind --log argument : returning\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
 			exit(1);
 		} else {
-			DIR* logdir;
-			if((logdir = opendir(argv[argv_pos+1])) == NULL) { // check if the dir behind --log is usable
+			if(opendir(argv[argv_pos+1]) == NULL) { // check if the dir behind --log is usable
 				switch(errno) {
 					case EACCES:
 						gettimeofday(&current_time, NULL), printf("[%.6f] permission denied to open dir behind --log argument : returning\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
@@ -141,11 +140,10 @@ int main(int argc, char *argv[]) {
 						exit(1);
 				}
 			} else { // is usable
-				gettimeofday(&current_time, NULL), printf("[%.6f] logging enabled : writing to %s\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), argv[argv_pos+1]);
-				logpath_strsize = sizeof(argv[argv_pos+1]);
-				logpath = (char *) malloc(logpath_strsize * sizeof(char));
+				logpath = (char *) malloc(strlen(argv[argv_pos+1])+1); // +1 for null terminator byte
 				strcpy(logpath, argv[argv_pos+1]);
 				logging = true;
+				gettimeofday(&current_time, NULL), printf("[%.6f] logging enabled : writing to %s\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), argv[argv_pos+1]);
 			}
 		}
 	}
@@ -194,18 +192,14 @@ int main(int argc, char *argv[]) {
 	FILE *logfile; // used if logging is enabled with --log shell argument
 	
 	while(1) { // infinite server loop
-
-		// the listening socket needs to be non blocking! if not the read syscall blocks until there is something to read and that makes custom timeout implementation impossible
 		gettimeofday(&current_time, NULL), printf("[%.6f] Listening for new connections...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
 		timeout_return = timeout(listenfd, POLLIN, 600000); // wait 600000 secs (10 mins) for incoming connections
 		if(timeout_return == POLLIN) { // new connection came in
 			gettimeofday(&current_time, NULL), printf("[%.6f] new (SYN) connection request came in!\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
 			struct sockaddr_in clientaddr;
 			socklen_t clientlen = sizeof(clientaddr);
-			//clientfd = accept(listenfd, (struct sockaddr*) &clientaddr, &clientlen);
 			clientfd = accept4(listenfd, (struct sockaddr*) &clientaddr, &clientlen, SOCK_NONBLOCK);
 			if(clientfd > 0) {
-				char client_ip[INET_ADDRSTRLEN];
 				inet_ntop(AF_INET, &clientaddr.sin_addr, client_ip, sizeof(client_ip)); // convert client ip to string
 				gettimeofday(&current_time, NULL), printf("[%.6f] (ACK) CONNECTION REQUEST ACCEPTED from %s:%u\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), client_ip, ntohs(clientaddr.sin_port));
 				timeout_return = timeout(clientfd, POLLIN, 10000); // wait 10 seconds for the SOCKS5 greeting from client
@@ -284,28 +278,35 @@ int main(int argc, char *argv[]) {
 												exit(-1); // unknown write() error
 											}
 											if(logging == true) {
-												// log the package content to a text file based on the path in the argument
+												// log the package content in form of a .bin binary file to the path in the argument
 												// if the content is somehow encrypted you need to decrypt it yourself
 												// path is argv[argv_pos+1]
-												char filename[sizeof(client_ip)];
+												char client_port[5];
+												sprintf(client_port, "%u", ntohs(clientaddr.sin_port));
+												char logname[] = "-request.bin";
+												// construct file name
+												char filename[strlen(client_ip)+strlen(client_port)+strlen(logname)+3]; // +3 because of the _ and - added below, and the null byte for strings
 												strcpy(filename, client_ip);
-												for(int count = 0; count < sizeof(filename); count++) { // construct the filename
+												for(int count = 0; count < strlen(filename); count++) { // replace dots with _ in the filename (because ipv4 of client is used as filename)
 													if(filename[count] == '.') {
 														filename[count] = '_';
 													}
 												}
-												char full_path[logpath_strsize+sizeof(filename)];
+												strcat(filename, "_");
+												strcat(filename, client_port);
+												strcat(filename, logname);
+												// construct full path with filename
+												char full_path[strlen(logpath)+strlen(filename)+1]; // +1 for null terminator byte
 												strcpy(full_path, logpath);
-												if(logpath[logpath_strsize-1] == '/') { // if last char of path is / then just append the filename
-													strcat(full_path, filename);
-												} else { // else first append / and then the filename for a correct full_path
+												if(logpath[strlen(logpath)-1] != '/') { // if last char of path is not / then append
 													strcat(full_path, "/");
-													strcat(full_path, filename);
 												}
-												logfile = fopen(full_path, "a");
-												fprintf(logfile, "\nRequest:\n====================\n\n");
-												fprintf(logfile, package);
-												fprintf(logfile, "\n");
+												strcat(full_path, filename);
+												logfile = fopen(full_path, "w"); // open (create) the logfile
+												fwrite(package, sizeof(package), 1, logfile); // write package to logfile
+												if(fclose(logfile) != 0) { // close the log file (every connection got its own)
+													exit(-1); // unknown fclose() error
+												}
 											}
 											if(forward == true) {
 												// forwarding and answer processing
@@ -339,15 +340,40 @@ int main(int argc, char *argv[]) {
 												}
 												*/
 												if(logging == true) {
-													fprintf(logfile, "\nAnswer:\n====================\n\n");
-													fprintf(logfile, package);
-													fprintf(logfile, "\n");
-												}
-											}
-											// after the printing, possible forwarding and answer processing, close log file (if logging is enabled) and the connection to the client (non-persistent)
-											if(logging == true) {
-												if(fclose(logfile) != 0) { // close the log file (every connection got its own)
-													exit(-1); // unknown fclose() error
+													// log the package content in form of a .bin binary file to the path in the argument
+													// if the content is somehow encrypted you need to decrypt it yourself
+													// path is argv[argv_pos+1]
+													char client_port[5];
+													sprintf(client_port, "%u", ntohs(clientaddr.sin_port));
+													char logname[] = "-reply.bin";
+													// construct file name
+													char filename[strlen(client_ip)+strlen(client_port)+strlen(logname)+3]; // +3 because of the _ and - added below, and the null byte for strings
+													strcpy(filename, client_ip);
+													for(int count = 0; count < strlen(filename); count++) { // replace dots with _ in the filename (because ipv4 of client is used as filename)
+														if(filename[count] == '.') {
+															filename[count] = '_';
+														}
+													}
+													strcat(filename, "_");
+													strcat(filename, client_port);
+													strcat(filename, logname);
+													// construct full path with filename
+													char full_path[strlen(logpath)+strlen(filename)+1]; // +1 for null terminator byte
+													strcpy(full_path, logpath);
+													if(logpath[strlen(logpath)-1] != '/') { // if last char of path is not / then append
+														strcat(full_path, "/");
+													}
+													strcat(full_path, filename);
+													logfile = fopen(full_path, "w"); // open (create) the logfile
+													/*
+													if(write(logfile, package, sizeof(package))) { // write package in binary form to logile
+														exit(-1); // unknown write() error
+													}
+													*/
+													fwrite(package, sizeof(package), 1, logfile); // write package to logfile
+													if(fclose(logfile) != 0) { // close the log file (every connection got its own)
+														exit(-1); // unknown fclose() error
+													}
 												}
 											}
 											if(shutdown(clientfd, SHUT_RDWR) < 0) {
