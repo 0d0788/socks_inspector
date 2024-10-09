@@ -124,8 +124,17 @@ void logpkg(char filename[], char logpath[], char *package, size_t package_len) 
 	}
 }
 
+void get_local_ip_and_port(int sockfd, uint8_t ip_buffer[4], uint16_t port) {
+	struct sockaddr_in local_addr;
+	socklen_t addr_len = sizeof(local_addr);
+	if (getsockname(sockfd, (struct sockaddr*)&local_addr, &addr_len) == -1) {
+		exit(-1); // unknown getsockname() error
+	}
+	memcpy(ip_buffer, &local_addr.sin_addr.s_addr, 4);
+	port = local_addr.sin_port;
+}
+	
 int main(int argc, char *argv[]) {
-
 	struct timeval start_time; gettimeofday(&start_time, NULL); // get start time of the program (used for timestamp printing)
 	struct timeval current_time;
 	int listenfd; // connection queue
@@ -221,7 +230,7 @@ int main(int argc, char *argv[]) {
 		uint8_t command;
 		uint8_t reserved;
 		uint8_t address_type;
-		uint8_t dst_address[4]; // 4 octets for IPv4 address
+		char dst_address[4]; // 4 octets for IPv4 address
 		uint16_t dst_port;
 	} SOCKS5_request_details;
 	SOCKS5_request_details request_details;
@@ -235,6 +244,9 @@ int main(int argc, char *argv[]) {
 	} SOCKS5_request_reply;
 	SOCKS5_request_reply request_reply;
 	
+	uint8_t local_ip[4]; // the local address used to fill request reply bnd_address field
+	uint16_t local_port; // the local port used to fill request reply bnd_port field
+	
 	while(1) { // infinite server loop
 		gettimeofday(&current_time, NULL), printf("[%.6f] Listening for new connections...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
 		timeout_return = timeout(listenfd, POLLIN, 600000); // wait 600000 secs (10 mins) for incoming connections
@@ -244,6 +256,7 @@ int main(int argc, char *argv[]) {
 			socklen_t clientlen = sizeof(clientaddr);
 			clientfd = accept4(listenfd, (struct sockaddr*) &clientaddr, &clientlen, SOCK_NONBLOCK);
 			if(clientfd > 0) {
+				get_local_ip_and_port(clientfd, local_ip, local_port); // get the local ip and port for the SOCKS5_request_reply.bnd_addr and SOCKS5_request_reply.bnd_port
 				inet_ntop(AF_INET, &clientaddr.sin_addr, client_ip, sizeof(client_ip)); // convert client ip to string
 				gettimeofday(&current_time, NULL), printf("[%.6f] (ACK) CONNECTION REQUEST ACCEPTED from %s:%u\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), client_ip, ntohs(clientaddr.sin_port));
 				timeout_return = timeout(clientfd, POLLIN, 10000); // wait 10 seconds for the SOCKS5 greeting from client
@@ -286,22 +299,22 @@ int main(int argc, char *argv[]) {
 								request_details.command = *(package+1);
 								request_details.reserved = 0x00;
 								request_details.address_type = *(package+3);
-								request_details.dst_address[0] = *(package+4);
-								request_details.dst_address[1] = *(package+5);
-								request_details.dst_address[2] = *(package+6);
-								request_details.dst_address[3] = *(package+7);
-								request_details.dst_port = ((uint16_t) *(package+8) << 8) | *(package+9);
 								if(request_details.command == 0x01) { // check if the command in the request details is CONNECT
-									if(request_details.address_type == 0x01 || request_details.address_type == 0x03) { // check if the address type in the request details is IPv4
+									if(request_details.address_type == 0x01) { // check if the address type in the request details is IPv4
+										request_details.dst_address[0] = *(package+4);
+										request_details.dst_address[1] = *(package+5);
+										request_details.dst_address[2] = *(package+6);
+										request_details.dst_address[3] = *(package+7);
+										request_details.dst_port = ((uint16_t) *(package+8) << 8) | *(package+9);
 										request_reply.version = 0x05;
 										request_reply.reply_code = 0x00; // connection succeeded
 										request_reply.reserved = 0x00;
 										request_reply.address_type = 0x01;
-										request_reply.bnd_address[0] = request_details.dst_address[0];
-										request_reply.bnd_address[1] = request_details.dst_address[1];
-										request_reply.bnd_address[2] = request_details.dst_address[2];
-										request_reply.bnd_address[3] = request_details.dst_address[3];
-										request_reply.bnd_port = request_details.dst_port;
+										request_reply.bnd_address[0] = local_ip[0];
+										request_reply.bnd_address[1] = local_ip[1];
+										request_reply.bnd_address[2] = local_ip[2];
+										request_reply.bnd_address[3] = local_ip[3];
+										request_reply.bnd_port = local_port;
 										if(write(clientfd, &request_reply, sizeof(request_reply)) < 0) { // send reply (0x00 for connection succeded)
 											exit(-1); // unknown write() error
 										}
@@ -403,9 +416,122 @@ int main(int argc, char *argv[]) {
 										}
 									}
 									else if(request_details.address_type == 0x03) { // if the address type requested by client is DOMAIN
-										
-									} else { // requested address type is not IPv4
-										gettimeofday(&current_time, NULL), printf("[%.6f] new connection requested other address type than IPv4 (proxy only supports IPv4): ignoring\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+										uint8_t dst_domain_length = *(package+4);
+										char dst_domain[dst_domain_length];
+										for(int count = 0; count < dst_domain_length; count++) { // safe the DOMAIN from request to resolv later if --forward is set
+											dst_domain[count] = *(package+(5+count));
+										}
+										request_details.dst_port = ((uint16_t) *(package+(5+dst_domain_length)) << 8) | *(package+(5+dst_domain_length+1)); //((uint16_t) *(package+8) << 8) | *(package+9);
+										request_reply.version = 0x05;
+										request_reply.reply_code = 0x00; // connection succeeded
+										request_reply.reserved = 0x00;
+										request_reply.address_type = 0x01;
+										request_reply.bnd_address[0] = local_ip[0];
+										request_reply.bnd_address[1] = local_ip[1];
+										request_reply.bnd_address[2] = local_ip[2];
+										request_reply.bnd_address[3] = local_ip[3];
+										request_reply.bnd_port = local_port;
+										if(write(clientfd, &request_reply, sizeof(request_reply)) < 0) { // send reply (0x00 for connection succeded)
+											exit(-1); // unknown write() error
+										}
+										timeout_return = timeout(clientfd, POLLIN, 10000); // wait 10 seconds for an answer (the actual package to echo and/or forward)
+										if(timeout_return == POLLIN) { // the answer came in
+											int readbytes;
+											if((readbytes = read(clientfd, package, sizeof(package))) < 0) {
+												exit(-1); // unknown read() error (too lazy to write further errno handling lol)
+											}
+											gettimeofday(&current_time, NULL), printf("[%.6f] PACKAGE CONTENT (hexdump) :\n\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+											hexdump(package, readbytes); // hexdump the read data
+											if(logging == true) {
+												// log the package content in form of a .bin binary file to the path in the argument
+												// if the content is somehow encrypted you need to decrypt it yourself
+												// path is argv[argv_pos+1]
+												char client_port[5];
+												sprintf(client_port, "%u", ntohs(clientaddr.sin_port));
+												char logname[] = "-request.bin";
+												// construct file name
+												char filename[strlen(client_ip)+strlen(client_port)+strlen(logname)+3]; // +3 because of the _ and - added below, and the null byte for strings
+												strcpy(filename, client_ip);
+												for(int count = 0; count < strlen(filename); count++) { // replace dots with _ in the filename (because ipv4 of client is used as filename)
+													if(filename[count] == '.') {
+														filename[count] = '_';
+													}
+												}
+												strcat(filename, "_");
+												strcat(filename, client_port);
+												strcat(filename, logname);
+												logpkg(filename, logpath, package, sizeof(package));
+											}
+											if(forward == true) {
+												// forwarding and answer processing
+												/*
+												gettimeofday(&current_time, NULL), printf("[%.6f] FORWARDING TO DEST...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+												// cast the package to a structure representing the package content and change or check values (if needed)
+												// int destfd = create_socket((bool) false, IP, PORT); // create destination socket and connect it to destination (from the received package)
+												timeout_return = timeout(destfd, POLLOUT, 10000);
+												if(timeout_return == POLLOUT) { // wait for the destfd socket to become writeable (connected)
+													write(destfd, package, sizeof(package)); // after connecting to the original dest, forward the package with write (destfd is the socket connected to the dest of the package)
+												}
+												else if(timeout_return == 0) {
+													gettimeofday(&current_time, NULL), printf("[%.6f] connecting to package destination failed : timeout\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+													exit(1);
+												}
+												timeout_return = timeout(destfd, POLLIN, 10000); // wait 10 secs for an answer
+												if(timeout_return == POLLIN) { // answer came in
+													// read, modify and forward to client
+												}
+												else if(timeout_return == 0) { // no answer (exceeded timeout)
+													gettimeofday(&current_time, NULL), printf("[%.6f] failed to receive an answer : timeout\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+													exit(1);
+												}
+												// close the destfd connection after forwarding (non-persistent behavior)
+												gettimeofday(&current_time, NULL), printf("[%.6f] (non-persistent)CLOSING CONNECTION TO DEST...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+												if(shutdown(destfd, SHUT_RDWR) < 0) {
+													exit(-1); // unknown shutdown() error
+												}
+												if(close(destfd) < 0) {
+													exit(-1); // unknown close() error
+												}
+												*/
+												if(logging == true) {
+													// log the package content in form of a .bin binary file to the path in the argument
+													// if the content is somehow encrypted you need to decrypt it yourself
+													// path is argv[argv_pos+1]
+													char client_port[5];
+													sprintf(client_port, "%u", ntohs(clientaddr.sin_port));
+													char logname[] = "-reply.bin";
+													// construct file name
+													char filename[strlen(client_ip)+strlen(client_port)+strlen(logname)+3]; // +3 because of the _ and - added below, and the null byte for strings
+													strcpy(filename, client_ip);
+													for(int count = 0; count < strlen(filename); count++) { // replace dots with _ in the filename (because ipv4 of client is used as filename)
+														if(filename[count] == '.') {
+															filename[count] = '_';
+														}
+													}
+													strcat(filename, "_");
+													strcat(filename, client_port);
+													strcat(filename, logname);
+													logpkg(filename, logpath, package, sizeof(package));
+												}
+											}
+											if(shutdown(clientfd, SHUT_RDWR) < 0) {
+												exit(-1); // unknown shutdown() error
+											}
+											if(close(clientfd) < 0) {
+												exit(-1); // unknown close() error
+											}
+										}
+										else if(timeout_return == 0) { // answer didn't came in after 10 secs
+											gettimeofday(&current_time, NULL), printf("[%.6f] no further input from %s:%u : timeout\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), client_ip, ntohs(clientaddr.sin_port));
+											if(shutdown(clientfd, SHUT_RDWR) < 0) {
+												exit(-1); // unknown shutdown() error
+											}
+											if(close(clientfd) < 0) {
+												exit(-1); // unknown close() error
+											}
+										}
+									} else { // requested address type is not IPv4 or DOMAIN
+										gettimeofday(&current_time, NULL), printf("[%.6f] new connection requested other address type than IPv4 or DOMAIN (proxy only supports IPv4 and DOMAIN): ignoring\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
 										request_reply.version = 0x05;
 										request_reply.reply_code = 0x08; // address type not supported
 										request_reply.reserved = 0x00;
