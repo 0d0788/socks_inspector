@@ -226,8 +226,11 @@ void *handle_socks_request(void *args) {
 	
 	char *random_string = get_rand_num_as_string(); // random value used in logfilename to guarantee unique file names and in the STDOUT messages for this connection
 	
+	int logcount_requests = 0; // log counter used for unique filenames
+	int logcount_replys = 0; // log counter used for unique filenames
+	
 	get_local_ip_and_port(clientfd, local_ip, local_port); // get the local ip and port for the SOCKS5_request_reply.bnd_addr and SOCKS5_request_reply.bnd_port
-	char client_port[6];
+	char client_port[6]; // outbound port of the connected client used in log filenames
 	sprintf(client_port, "%u", ntohs(clientaddr.sin_port));
 	inet_ntop(AF_INET, &clientaddr.sin_addr, client_ip, sizeof(client_ip)); // convert client ip to string
 	gettimeofday(&current_time, NULL); printf("[%.6f][%s] (ACK) CONNECTION REQUEST ACCEPTED from %s:%u\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string, client_ip, ntohs(clientaddr.sin_port));
@@ -325,8 +328,11 @@ void *handle_socks_request(void *args) {
 									// path is argv[argv_pos+1]
 									char logname[] = "-request-";
 									char ending[] = ".bin";
+									char logcount[10]; // size is 10 because of max int value (10 digits)
+									sprintf(logcount, "%u", logcount_requests);
 									// construct file name
-									char filename[strlen(client_ip)+strlen(client_port)+strlen(logname)+strlen(random_string)+strlen(ending)+3]; // +3 because of the _ and - added below, and the null byte for strings
+									char filename[strlen(client_ip)+strlen(client_port)+strlen(logname)+strlen(random_string)+strlen(logcount)+strlen(ending)+4]; // +4 because of the _ and - added below, and the null byte for strings
+									memset(filename, 0, sizeof(filename));
 									strcpy(filename, client_ip);
 									for(int count = 0; count < sizeof(filename); count++) { // replace dots with _ in the filename (because ipv4 of client is used as filename)
 										if(filename[count] == '.') {
@@ -337,8 +343,11 @@ void *handle_socks_request(void *args) {
 									strcat(filename, client_port);
 									strcat(filename, logname);
 									strcat(filename, random_string);
+									strcat(filename, "-");
+									strcat(filename, logcount);
 									strcat(filename, ending);
 									logpkg(filename, logpath, package, readbytes);
+									logcount_requests++;
 								}
 								if(forwarding_enabled == true) {
 									// forwarding and answer processing
@@ -362,15 +371,14 @@ void *handle_socks_request(void *args) {
 										} else {
 											printf("done!\n");
 										}
-										struct pollfd fds[2];
+										struct pollfd fds[2]; // poll() struct array
 										fds[0].fd = destfd;
 										fds[0].events = POLLIN;
 										fds[1].fd = clientfd;
 										fds[1].events = POLLIN;
-										int poll_return;
 										while(1) {
-											poll_return = poll(fds, 2, 5000);
-											if(poll_return > 0) {
+											timeout_return = poll(fds, 2, 5000);
+											if(timeout_return > 0) {
 												if(fds[0].revents & POLLIN) {
 													memset(package, 0, sizeof(package)); // zero out package buffer to avoid garbage data
 													readbytes = read(destfd, package, sizeof(package)); // try to read() a answer from dest
@@ -394,8 +402,11 @@ void *handle_socks_request(void *args) {
 														// path is argv[argv_pos+1]
 														char logname[] = "-reply-";
 														char ending[] = ".bin";
+														char logcount[10]; // size is 10 because of max int value (10 digits)
+														sprintf(logcount, "%u", logcount_replys);
 														// construct file name
-														char filename[strlen(client_ip)+strlen(client_port)+strlen(logname)+strlen(random_string)+strlen(ending)+3]; // +3 because of the _ and - added below, and the null byte for strings
+														char filename[strlen(client_ip)+strlen(client_port)+strlen(logname)+strlen(random_string)+strlen(logcount)+strlen(ending)+4]; // +4 because of the _ and - added below, and the null byte for strings
+														memset(filename, 0, sizeof(filename));
 														strcpy(filename, client_ip);
 														for(int count = 0; count < sizeof(filename); count++) { // replace dots with _ in the filename (because ipv4 of client is used as filename)
 															if(filename[count] == '.') {
@@ -406,8 +417,11 @@ void *handle_socks_request(void *args) {
 														strcat(filename, client_port);
 														strcat(filename, logname);
 														strcat(filename, random_string);
+														strcat(filename, "-");
+														strcat(filename, logcount);
 														strcat(filename, ending);
 														logpkg(filename, logpath, package, readbytes);
+														logcount_replys++;
 													}
 													gettimeofday(&current_time, NULL); printf("[%.6f][%s] FORWARDING REPLY TO CLIENT... ", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 													if(send(clientfd, package, readbytes, MSG_NOSIGNAL) < 0) { // forward the answer to the client
@@ -453,8 +467,11 @@ void *handle_socks_request(void *args) {
 														// path is argv[argv_pos+1]
 														char logname[] = "-request-";
 														char ending[] = ".bin";
+														char logcount[10]; // size is 10 because of max int value (10 digits)
+														sprintf(logcount, "%u", logcount_requests);
 														// construct file name
-														char filename[strlen(client_ip)+strlen(client_port)+strlen(logname)+strlen(random_string)+strlen(ending)+3]; // +3 because of the _ and - added below, and the null byte for strings
+														char filename[strlen(client_ip)+strlen(client_port)+strlen(logname)+strlen(random_string)+strlen(logcount)+strlen(ending)+4]; // +4 because of the _ and - added below, and the null byte for strings
+														memset(filename, 0, sizeof(filename));
 														strcpy(filename, client_ip);
 														for(int count = 0; count < sizeof(filename); count++) { // replace dots with _ in the filename (because ipv4 of client is used as filename)
 															if(filename[count] == '.') {
@@ -465,8 +482,11 @@ void *handle_socks_request(void *args) {
 														strcat(filename, client_port);
 														strcat(filename, logname);
 														strcat(filename, random_string);
+														strcat(filename, "-");
+														strcat(filename, logcount);
 														strcat(filename, ending);
 														logpkg(filename, logpath, package, readbytes);
+														logcount_requests++;
 													}
 													gettimeofday(&current_time, NULL); printf("[%.6f][%s] FORWARDING REQUEST TO DEST... ", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 													if(send(destfd, package, readbytes, MSG_NOSIGNAL) < 0) { // forward the request
@@ -490,13 +510,13 @@ void *handle_socks_request(void *args) {
 													return NULL;
 												}
 											}
-											else if(poll_return == 0) {
+											else if(timeout_return == 0) {
 												gettimeofday(&current_time, NULL); printf("[%.6f][%s] no data to forward to or from client : timeout\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 												close_connection(destfd);
 												close_connection(clientfd);
 												return NULL;
 											}
-											else if(poll_return < 0) {
+											else if(timeout_return < 0) {
 												exit(-1); // unknown poll() error
 											}
 										}
@@ -562,8 +582,11 @@ void *handle_socks_request(void *args) {
 									// path is argv[argv_pos+1]
 									char logname[] = "-request-";
 									char ending[] = ".bin";
+									char logcount[10]; // size is 10 because of max int value (10 digits)
+									sprintf(logcount, "%u", logcount_requests);
 									// construct file name
-									char filename[strlen(client_ip)+strlen(client_port)+strlen(logname)+strlen(random_string)+strlen(ending)+3]; // +3 because of the _ and - added below, and the null byte for strings
+									char filename[strlen(client_ip)+strlen(client_port)+strlen(logname)+strlen(random_string)+strlen(logcount)+strlen(ending)+4]; // +4 because of the _ and - added below, and the null byte for strings
+									memset(filename, 0, sizeof(filename));
 									strcpy(filename, client_ip);
 									for(int count = 0; count < sizeof(filename); count++) { // replace dots with _ in the filename (because ipv4 of client is used as filename)
 										if(filename[count] == '.') {
@@ -574,8 +597,11 @@ void *handle_socks_request(void *args) {
 									strcat(filename, client_port);
 									strcat(filename, logname);
 									strcat(filename, random_string);
+									strcat(filename, "-");
+									strcat(filename, logcount);
 									strcat(filename, ending);
 									logpkg(filename, logpath, package, readbytes);
+									logcount_requests++;
 								}
 								if(forwarding_enabled == true) {
 									// forwarding and answer processing
@@ -624,15 +650,14 @@ void *handle_socks_request(void *args) {
 												} else {
 													printf("done!\n");
 												}
-												struct pollfd fds[2];
+												struct pollfd fds[2]; // poll() struct array
 												fds[0].fd = destfd;
 												fds[0].events = POLLIN;
 												fds[1].fd = clientfd;
 												fds[1].events = POLLIN;
-												int poll_return;
 												while(1) {
-													poll_return = poll(fds, 2, 5000);
-													if(poll_return > 0) {
+													timeout_return = poll(fds, 2, 5000);
+													if(timeout_return > 0) {
 														if(fds[0].revents & POLLIN) {
 															memset(package, 0, sizeof(package)); // zero out package buffer to avoid garbage data
 															readbytes = read(destfd, package, sizeof(package)); // try to read() a answer from dest
@@ -656,8 +681,11 @@ void *handle_socks_request(void *args) {
 																// path is argv[argv_pos+1]
 																char logname[] = "-reply-";
 																char ending[] = ".bin";
+																char logcount[10]; // size is 10 because of max int value (10 digits)
+																sprintf(logcount, "%u", logcount_replys);
 																// construct file name
-																char filename[strlen(client_ip)+strlen(client_port)+strlen(logname)+strlen(random_string)+strlen(ending)+3]; // +3 because of the _ and - added below, and the null byte for strings
+																char filename[strlen(client_ip)+strlen(client_port)+strlen(logname)+strlen(random_string)+strlen(logcount)+strlen(ending)+4]; // +4 because of the _ and - added below, and the null byte for strings
+																memset(filename, 0, sizeof(filename));
 																strcpy(filename, client_ip);
 																for(int count = 0; count < sizeof(filename); count++) { // replace dots with _ in the filename (because ipv4 of client is used as filename)
 																	if(filename[count] == '.') {
@@ -668,8 +696,11 @@ void *handle_socks_request(void *args) {
 																strcat(filename, client_port);
 																strcat(filename, logname);
 																strcat(filename, random_string);
+																strcat(filename, "-");
+																strcat(filename, logcount);
 																strcat(filename, ending);
 																logpkg(filename, logpath, package, readbytes);
+																logcount_replys++;
 															}
 															gettimeofday(&current_time, NULL); printf("[%.6f][%s] FORWARDING REPLY TO CLIENT... ", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 															if(send(clientfd, package, readbytes, MSG_NOSIGNAL) < 0) { // forward the answer to the client
@@ -715,8 +746,11 @@ void *handle_socks_request(void *args) {
 																// path is argv[argv_pos+1]
 																char logname[] = "-request-";
 																char ending[] = ".bin";
+																char logcount[10]; // size is 10 because of max int value (10 digits)
+																sprintf(logcount, "%u", logcount_requests);
 																// construct file name
-																char filename[strlen(client_ip)+strlen(client_port)+strlen(logname)+strlen(random_string)+strlen(ending)+3]; // +3 because of the _ and - added below, and the null byte for strings
+																char filename[strlen(client_ip)+strlen(client_port)+strlen(logname)+strlen(random_string)+strlen(logcount)+strlen(ending)+4]; // +4 because of the _ and - added below, and the null byte for strings
+																memset(filename, 0, sizeof(filename));
 																strcpy(filename, client_ip);
 																for(int count = 0; count < sizeof(filename); count++) { // replace dots with _ in the filename (because ipv4 of client is used as filename)
 																	if(filename[count] == '.') {
@@ -727,8 +761,11 @@ void *handle_socks_request(void *args) {
 																strcat(filename, client_port);
 																strcat(filename, logname);
 																strcat(filename, random_string);
+																strcat(filename, "-");
+																strcat(filename, logcount);
 																strcat(filename, ending);
 																logpkg(filename, logpath, package, readbytes);
+																logcount_requests++;
 															}
 															gettimeofday(&current_time, NULL); printf("[%.6f][%s] FORWARDING REQUEST TO DEST... ", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 															if(send(destfd, package, readbytes, MSG_NOSIGNAL) < 0) { // forward the request
@@ -752,13 +789,13 @@ void *handle_socks_request(void *args) {
 															return NULL;
 														}
 													}
-													else if(poll_return == 0) {
+													else if(timeout_return == 0) {
 														gettimeofday(&current_time, NULL); printf("[%.6f][%s] no data to forward to or from client : timeout\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 														close_connection(destfd);
 														close_connection(clientfd);
 														return NULL;
 													}
-													else if(poll_return < 0) {
+													else if(timeout_return < 0) {
 														exit(-1); // unknown poll() error
 													}
 												}
