@@ -12,7 +12,7 @@
 ### Log Format
   Everything is logged in binary format .bin files. Can be viewed with a hexdump program, xxd for example.</br>
   
-  Filename format of logged network packages : CLIENTIP_CLIENTPORT-PACKAGETYPE-RANDOMVALUE-COUNT.bin</br>
+  Filename format : CLIENTIP_CLIENTPORT-PACKAGETYPE-RANDOMVALUE-COUNT.bin</br>
   CLIENTIP = the IPv4 address of the connected client</br>
   CLIENTPORT = the outbound port of the connected client</br>
   PACKAGETYPE = either request or reply</br>
