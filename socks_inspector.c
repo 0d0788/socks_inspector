@@ -105,20 +105,24 @@ void editbuffer(unsigned char *buffer, size_t bufferlen) {
 	char selection;
 	while(1) {
 		printf("change a single byte, byterange or skip (b/r/s): "); scanf("%c", &selection);
+		getchar(); // consume newline to clear STDIN
 		if(selection == 'b' || selection == 'B') { // selection is to change a single byte
 			unsigned char newbyte = 0;
 			int bytepos = 0;
 			printf("enter byte (0-%u) you wanna change: ", (bufferlen-1)); scanf("%u", &bytepos);
+			getchar(); // consume newline to clear STDIN
 			if(bytepos >= bufferlen) {
 				printf("input > bufferlen\n");
 				continue;
 			} else {
 				printf("(%u) enter new value in 2 digit hex format: ", bytepos); scanf("%02X", &newbyte);
+				getchar(); // consume newline to clear STDIN
 				printf("swapping values...");
 				buffer[bytepos] = newbyte;
 				printf("done!\n");
 				while(1) {
 					printf("change another byte or byterange? (y/n): "); scanf("%c", &selection);
+					getchar(); // consume newline to clear STDIN
 					if(selection == 'y' || selection == 'Y') {
 						break;
 					}
@@ -136,7 +140,9 @@ void editbuffer(unsigned char *buffer, size_t bufferlen) {
 			memset(newbytes, 0, sizeof(newbytes));
 			printf("enter byterange (max. %u) you wanna change\n", (bufferlen-1));
 			printf("from: "); scanf("%u", &frombyte);
+			getchar(); // consume newline to clear STDIN
 			printf("to: "); scanf("%u", &tobyte);
+			getchar(); // consume newline to clear STDIN
 			if(frombyte >= bufferlen || tobyte >= bufferlen) {
 				printf("input > bufferlen");
 				continue;
@@ -148,6 +154,7 @@ void editbuffer(unsigned char *buffer, size_t bufferlen) {
 				printf("(%u-%u) enter new values in 2 digit hex format and without spaces:\n", frombyte, tobyte);
 				for(count = 0; count <= (tobyte-frombyte); count++) {
 					scanf("%02X", &newbytes[count]);
+					getchar(); // consume newline to clear STDIN
 				}
 				printf("swapping values...");
 				for(count = 0; count <= (tobyte-frombyte); count++) {
@@ -156,6 +163,7 @@ void editbuffer(unsigned char *buffer, size_t bufferlen) {
 				printf("done!\n");
 				while(1) {
 					printf("change another byte or byterange? (y/n): "); scanf("%c", &selection);
+					getchar(); // consume newline to clear STDIN
 					if(selection == 'y' || selection == 'Y') {
 						break;
 					}
@@ -214,7 +222,7 @@ char *get_rand_num_as_string() { // returns a pointer to a random value as strin
 
 void close_connection(int sockfd) { // helper to reduce code size
 	if(shutdown(sockfd, SHUT_RDWR) < 0) {
-		if(errno != ENOTCONN) {
+		if(errno != ENOTCONN && errno != EPIPE && errno != ECONNRESET) {
 			exit(-1); // unknown shutdown() error
 		}
 	}
@@ -228,8 +236,8 @@ typedef struct {
 	struct timeval start_time;
 	bool forwarding_enabled;
 	bool hexdump_enabled;
-	bool logging_enabled;
 	bool editing_enabled;
+	bool logging_enabled;
 	char *logpath;
 	struct sockaddr_in clientaddr;
 } socks_handler_args;
@@ -240,8 +248,8 @@ void *handle_socks_request(void *args) {
 	struct timeval current_time;
 	bool forwarding_enabled = func_args->forwarding_enabled;
 	bool hexdump_enabled = func_args->hexdump_enabled;
-	bool logging_enabled = func_args->logging_enabled;
 	bool editing_enabled = func_args->editing_enabled;
+	bool logging_enabled = func_args->logging_enabled;
 	char *logpath = func_args->logpath;
 	int clientfd = func_args->clientfd; // accepted incoming connection from listenfd
 	int destfd; // destination where packages are forwarded to (if enabled)
@@ -539,6 +547,14 @@ void *handle_socks_request(void *args) {
 														gettimeofday(&current_time, NULL); printf("[%.6f][%s] REQUEST PACKAGE CONTENT (hexdump) :\n\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 														hexdump(package, readbytes); // hexdump the read data
 													}
+													if(editing_enabled == true) {
+														gettimeofday(&current_time, NULL); printf("[%.6f][%s] entering hexedit mode...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
+														editbuffer(package, readbytes);
+														if(hexdump_enabled == true) {
+															gettimeofday(&current_time, NULL); printf("[%.6f][%s] EDITED REQUEST PACKAGE CONTENT (hexdump) :\n\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
+															hexdump(package, readbytes);
+														}
+													}
 													if(logging_enabled == true) {
 														// log the package content in form of a .bin binary file to the path in the argument
 														// if the content is somehow encrypted you need to decrypt it yourself
@@ -829,6 +845,14 @@ void *handle_socks_request(void *args) {
 																gettimeofday(&current_time, NULL); printf("[%.6f][%s] REQUEST PACKAGE CONTENT (hexdump) :\n\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 																hexdump(package, readbytes); // hexdump the read data
 															}
+															if(editing_enabled == true) {
+																gettimeofday(&current_time, NULL); printf("[%.6f][%s] entering hexedit mode...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
+																editbuffer(package, readbytes);
+																if(hexdump_enabled == true) {
+																	gettimeofday(&current_time, NULL); printf("[%.6f][%s] EDITED REQUEST PACKAGE CONTENT (hexdump) :\n\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
+																	hexdump(package, readbytes);
+																}
+															}
 															if(logging_enabled == true) {
 																// log the package content in form of a .bin binary file to the path in the argument
 																// if the content is somehow encrypted you need to decrypt it yourself
@@ -1038,7 +1062,7 @@ int main(int argc, char *argv[]) {
 	char *logpath = NULL;
 	argv_pos = check_argv(argc, argv, "--log");
 	if(argv_pos == -1) {
-		gettimeofday(&current_time, NULL); printf("[%.6f] logging disabled : only echo the package content\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+		gettimeofday(&current_time, NULL); printf("[%.6f] logging disabled : --log not set\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
 		logging = false;
 	} else {
 		// logging enabled
@@ -1113,8 +1137,8 @@ int main(int argc, char *argv[]) {
 	args->start_time = start_time;
 	args->forwarding_enabled = forward;
 	args->hexdump_enabled = hexd;
-	args->logging_enabled = logging;
 	args->editing_enabled = editing;
+	args->logging_enabled = logging;
 	args->logpath = logpath;
 
 	gettimeofday(&current_time, NULL); printf("[%.6f] Listening for new connections...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
