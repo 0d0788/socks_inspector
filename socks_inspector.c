@@ -259,7 +259,7 @@ void *handle_socks_request(void *args) {
 	struct sockaddr_in clientaddr = func_args->clientaddr;
 	char client_ip[INET_ADDRSTRLEN+1]; // ip address of the client +1 for null terminator
 	memset(client_ip, 0, sizeof(client_ip)); // zero the buffer
-	char dest_ip[INET_ADDRSTRLEN+1]; // ip address of the dest +1 for null terminator
+	char dest_ip[INET_ADDRSTRLEN+1]; // ip address of the dest as string +1 for null terminator
 	memset(dest_ip, 0, sizeof(dest_ip)); // zero the buffer
 	uint32_t dest_addr = 0; // dest ipv4 in network byte order used by connect()
 	uint16_t dest_port = 0; // dest port in network byte order used by connect()
@@ -305,16 +305,16 @@ void *handle_socks_request(void *args) {
 	} SOCKS5_request_reply;
 	SOCKS5_request_reply request_reply;
 	memset(&request_reply, 0, sizeof(SOCKS5_request_reply));
-	
+
 	uint8_t local_ip[4]; // the local address used to fill request reply bnd_address field
 	uint16_t local_port; // the local port used to fill request reply bnd_port field
 	ssize_t readbytes; // used to safe return value of read()
-	
+
 	char *random_string = get_rand_num_as_string(); // random value used in logfilename to guarantee unique file names and in the STDOUT messages for this connection
-	
+
 	int logcount_requests = 0; // log counter used for unique filenames
 	int logcount_replys = 0; // log counter used for unique filenames
-	
+
 	get_local_ip_and_port(clientfd, local_ip, local_port); // get the local ip and port for the SOCKS5_request_reply.bnd_addr and SOCKS5_request_reply.bnd_port
 	char client_port[6]; // outbound port of the connected client used in log filenames
 	sprintf(client_port, "%u", ntohs(clientaddr.sin_port));
@@ -454,6 +454,7 @@ void *handle_socks_request(void *args) {
 										gettimeofday(&current_time, NULL); printf("[%.6f][%s] waiting for the actual request to decrypt...", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 										timeout_return = timeout(clientfd, POLLIN, 5000);
 										if(timeout_return & POLLIN) {
+											memset(package, 0, sizeof(package)); // zero out buffer to avoid garbage data
 											while((ssl_rtrn = SSL_read_ex(tls_client, package, sizeof(package), &readbytes)) != 1) {
 												switch(SSL_get_error(tls_client, ssl_rtrn)) {
 													case SSL_ERROR_WANT_READ:
@@ -540,7 +541,6 @@ void *handle_socks_request(void *args) {
 									logcount_requests++;
 								}
 								if(forwarding_enabled == true) {
-									// forwarding and answer processing
 									gettimeofday(&current_time, NULL); printf("[%.6f][%s] forwarding to :: %u.%u.%u.%u:%u\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string, request_details.dst_address[0], request_details.dst_address[1], request_details.dst_address[2], request_details.dst_address[3], ntohs(dest_port));
 									gettimeofday(&current_time, NULL); printf("[%.6f][%s] CONNECTING TO DEST... ", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 									destfd = open_socket((bool) false, dest_addr, dest_port); // create destination socket and connect it to destination
@@ -608,7 +608,7 @@ void *handle_socks_request(void *args) {
 											// TLS handshake complete
 											printf("done!\n");
 											gettimeofday(&current_time, NULL); printf("[%.6f][%s] FORWARDING REQUEST TO DEST... ", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-											while((ssl_rtrn = SSL_write(tls_dest, package, readbytes)) != 1) {
+											while((ssl_rtrn = SSL_write(tls_dest, package, readbytes)) <= 0) {
 												switch(SSL_get_error(tls_dest, ssl_rtrn)) {
 													case SSL_ERROR_WANT_READ:
 														usleep(1000);
@@ -737,7 +737,7 @@ void *handle_socks_request(void *args) {
 													}
 													gettimeofday(&current_time, NULL); printf("[%.6f][%s] FORWARDING REPLY TO CLIENT... ", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 													if(tls_decrypt_enabled == true && is_tls == true) {
-														while((ssl_rtrn = SSL_write(tls_client, package, readbytes)) != 1) {
+														while((ssl_rtrn = SSL_write(tls_client, package, readbytes)) <= 0) {
 															switch(SSL_get_error(tls_client, ssl_rtrn)) {
 																case SSL_ERROR_WANT_READ:
 																	usleep(1000);
@@ -875,7 +875,7 @@ void *handle_socks_request(void *args) {
 													}
 													gettimeofday(&current_time, NULL); printf("[%.6f][%s] FORWARDING REQUEST TO DEST... ", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 													if(tls_decrypt_enabled == true && is_tls == true) {
-														while((ssl_rtrn = SSL_write(tls_dest, package, readbytes)) != 1) {
+														while((ssl_rtrn = SSL_write(tls_dest, package, readbytes)) <= 0) {
 															switch(SSL_get_error(tls_dest, ssl_rtrn)) {
 																case SSL_ERROR_WANT_READ:
 																	usleep(1000);
@@ -996,8 +996,102 @@ void *handle_socks_request(void *args) {
 							timeout_return = timeout(clientfd, POLLIN, 5000); // wait 5 seconds for an answer (the actual package to echo and/or decrypt and/or forward)
 							if(timeout_return & POLLIN) { // the answer came in
 								memset(package, 0, sizeof(package));
-								if((readbytes = read(clientfd, package, sizeof(package))) < 0) {
-									exit(-1); // unknown read() error (too lazy to write further errno handling lol)
+								if(tls_decrypt_enabled == true) { // check if decryption is enabled
+									if(recv(clientfd, package, 3, MSG_PEEK) < 0) { // peek at the first 3 bytes to check if its indeed a TLS client hello
+										exit(-1); // unknown recv() error (too lazy to write further errno handling lol)
+									}
+									if(package[0] == 0x16 && (((package[1] << 8) | package[2]) == 0x0303 || ((package[1] << 8) | package[2]) == 0x0301)) { // is a TLS client hello
+										is_tls = true;
+										// TLS man-in-the-middle decryption
+										tls_client_ctx = SSL_CTX_new(TLS_server_method());
+										uint64_t opts = SSL_OP_IGNORE_UNEXPECTED_EOF | SSL_OP_NO_RENEGOTIATION;
+										SSL_CTX_set_options(tls_client_ctx, opts);
+										gettimeofday(&current_time, NULL); printf("[%.6f][%s] LOADING TLS CERT... ", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
+										if(SSL_CTX_use_certificate_file(tls_client_ctx, "cert.pem", SSL_FILETYPE_PEM) <= 0) { // load TLS server cert
+											printf("failed!\n");
+											exit(-1);
+										} else {
+											printf("done!\n");
+										}
+										gettimeofday(&current_time, NULL); printf("[%.6f][%s] LOADING TLS PRIVATE KEY... ", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
+										if(SSL_CTX_use_PrivateKey_file(tls_client_ctx, "pkey.pem", SSL_FILETYPE_PEM) <= 0) { // load TLS server private key
+											printf("failed! possible key/cert mismatch???\n");
+											exit(-1);
+										} else {
+											printf("done!\n");
+										}
+										SSL_CTX_set_verify(tls_client_ctx, SSL_VERIFY_NONE, NULL);
+										tls_client = SSL_new(tls_client_ctx);
+										SSL_set_fd(tls_client, clientfd);
+										gettimeofday(&current_time, NULL); printf("[%.6f][%s] ATTEMPTING TLS HANDSHAKE WITH CLIENT... ", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
+										while((ssl_rtrn = SSL_accept(tls_client)) != 1) { // Attempt an TLS handshake with the client
+											switch(SSL_get_error(tls_client, ssl_rtrn)) {
+												case SSL_ERROR_WANT_READ: // handshake not complete yet
+													usleep(1000);
+													continue;
+												case SSL_ERROR_WANT_WRITE: // handshake not complete yet
+													usleep(1000);
+													continue;
+												default:
+													printf("failed!\n");
+													SSL_free(tls_client);
+													SSL_CTX_free(tls_client_ctx);
+													gettimeofday(&current_time, NULL); printf("[%.6f][%s] CLOSING CONNECTION TO CLIENT...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
+													close_connection(clientfd);
+													return NULL;
+											}
+										}
+										// TLS handshake complete
+										printf("done!\n");
+										gettimeofday(&current_time, NULL); printf("[%.6f][%s] waiting for the actual request to decrypt...", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
+										timeout_return = timeout(clientfd, POLLIN, 5000);
+										if(timeout_return & POLLIN) {
+											memset(package, 0, sizeof(package)); // zero out buffer to avoid garbage data
+											while((ssl_rtrn = SSL_read_ex(tls_client, package, sizeof(package), &readbytes)) != 1) {
+												switch(SSL_get_error(tls_client, ssl_rtrn)) {
+													case SSL_ERROR_WANT_READ:
+														usleep(1000);
+														continue;
+													case SSL_ERROR_WANT_WRITE:
+														usleep(1000);
+														continue;
+													case SSL_ERROR_ZERO_RETURN:
+														gettimeofday(&current_time, NULL); printf("\n[%.6f][%s] client closed the connection : closing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
+														SSL_free(tls_client);
+														SSL_CTX_free(tls_client_ctx);
+														if(close(clientfd) < 0) {
+															exit(-1);
+														}
+														return NULL;
+													default:
+														printf("error!\n");
+														exit(-1); // unknown SSL_read() error
+												}
+											}
+											printf("done!\n");
+										}
+										else if(timeout_return == 0) {
+											gettimeofday(&current_time, NULL); printf("\n[%.6f][%s] no request to decrypt : timeout\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
+											SSL_free(tls_client);
+											SSL_CTX_free(tls_client_ctx);
+											gettimeofday(&current_time, NULL); printf("[%.6f][%s] CLOSING CONNECTION TO CLIENT...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
+											close_connection(clientfd);
+											return NULL;
+										}
+										else if(timeout_return < 0) {
+											exit(-1); // unknown poll() error
+										}
+									} else { // is not a TLS client hello, just read()
+										is_tls = false;
+										memset(package, 0, sizeof(package)); // zero out buffer to avoid garbage data
+										if((readbytes = read(clientfd, package, sizeof(package))) < 0) {
+											exit(-1); // unknown read() error (too lazy to write further errno handling lol)
+										}
+									}
+								} else { // no TLS decryption enabled just read()
+									if((readbytes = read(clientfd, package, sizeof(package))) < 0) {
+										exit(-1); // unknown read() error (too lazy to write further errno handling lol)
+									}
 								}
 								if(hexdump_enabled == true) {
 									gettimeofday(&current_time, NULL); printf("[%.6f][%s] REQUEST PACKAGE CONTENT (hexdump) :\n\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
@@ -1039,7 +1133,6 @@ void *handle_socks_request(void *args) {
 									logcount_requests++;
 								}
 								if(forwarding_enabled == true) {
-									// forwarding and answer processing
 									struct addrinfo *dst_info;
 									int getaddrinfo_rtrn = getaddrinfo(dst_domain, NULL, NULL, &dst_info);
 									if(getaddrinfo_rtrn != 0) {
@@ -1077,21 +1170,82 @@ void *handle_socks_request(void *args) {
 											timeout_return = timeout(destfd, POLLOUT, 5000);
 											if(timeout_return & POLLOUT) { // wait for the destfd socket to become writeable (connected)
 												printf("done!\n");
-												gettimeofday(&current_time, NULL); printf("[%.6f][%s] FORWARDING REQUEST TO DEST... ", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-												if(send(destfd, package, readbytes, MSG_NOSIGNAL) < 0) { // forward the request
-													if(errno == ENOTCONN || errno == EPIPE || errno == ECONNRESET) {
-														gettimeofday(&current_time, NULL); printf("\n[%.6f][%s] dest closed the connection : continuing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-														if(close(destfd) < 0) {
-															exit(-1);
+												if(tls_decrypt_enabled == true && is_tls == true) {
+													// TLS man-in-the-middle forwarding
+													tls_dest_ctx = SSL_CTX_new(TLS_client_method());
+													SSL_CTX_set_verify(tls_dest_ctx, SSL_VERIFY_NONE, NULL);
+													tls_dest = SSL_new(tls_dest_ctx);
+													SSL_set_fd(tls_dest, destfd);
+													SSL_set_tlsext_host_name(tls_dest, dst_domain); // set the TLS SNI client hello extension
+													gettimeofday(&current_time, NULL); printf("[%.6f][%s] ATTEMPTING TLS HANDSHAKE WITH DEST... ", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
+													while((ssl_rtrn = SSL_connect(tls_dest)) != 1) { // Attempt an TLS handshake with the dest
+														switch(SSL_get_error(tls_dest, ssl_rtrn)) {
+															case SSL_ERROR_WANT_READ: // handshake not complete yet
+																usleep(1000);
+																continue;
+															case SSL_ERROR_WANT_WRITE: // handshake not complete yet
+																usleep(1000);
+																continue;
+															default:
+																printf("failed!\n");
+																SSL_free(tls_dest);
+																SSL_CTX_free(tls_dest_ctx);
+																SSL_free(tls_client);
+																SSL_CTX_free(tls_client_ctx);
+																gettimeofday(&current_time, NULL); printf("[%.6f][%s] CLOSING CONNECTION TO DEST...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
+																close_connection(destfd);
+																gettimeofday(&current_time, NULL); printf("[%.6f][%s] CLOSING CONNECTION TO CLIENT...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
+																close_connection(clientfd);
+																return NULL;
 														}
-														gettimeofday(&current_time, NULL); printf("[%.6f][%s] CLOSING CONNECTION TO CLIENT...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-														close_connection(clientfd);
-														return NULL;
-													} else {
-														exit(-1); // unknown write() error
 													}
-												} else {
+													// TLS handshake complete
 													printf("done!\n");
+													gettimeofday(&current_time, NULL); printf("[%.6f][%s] FORWARDING REQUEST TO DEST... ", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
+													while((ssl_rtrn = SSL_write(tls_dest, package, readbytes)) <= 0) {
+														switch(SSL_get_error(tls_dest, ssl_rtrn)) {
+															case SSL_ERROR_WANT_READ:
+																usleep(1000);
+																continue;
+															case SSL_ERROR_WANT_WRITE:
+																usleep(1000);
+																continue;
+															case SSL_ERROR_ZERO_RETURN:
+																gettimeofday(&current_time, NULL); printf("\n[%.6f][%s] dest closed the connection : closing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
+																SSL_free(tls_dest);
+																SSL_CTX_free(tls_dest_ctx);
+																SSL_free(tls_client);
+																SSL_CTX_free(tls_client_ctx);
+																if(close(destfd) < 0) {
+																	exit(-1); // unknown close() error
+																}
+																gettimeofday(&current_time, NULL); printf("[%.6f][%s] CLOSING CONNECTION TO CLIENT...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
+																close_connection(clientfd);
+																return NULL;
+															default:
+																printf("error!\n");
+																exit(-1); // unknown SSL_write() error
+														}
+													}
+													printf("done!\n");
+												} else {
+													gettimeofday(&current_time, NULL); printf("[%.6f][%s] FORWARDING REQUEST TO DEST... ", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
+													if(send(destfd, package, readbytes, MSG_NOSIGNAL) < 0) { // forward the request
+														if(errno == ENOTCONN || errno == EPIPE || errno == ECONNRESET) {
+															gettimeofday(&current_time, NULL); printf("\n[%.6f][%s] dest closed the connection : closing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
+															if(close(destfd) < 0) {
+																exit(-1);
+															}
+															gettimeofday(&current_time, NULL); printf("[%.6f][%s] CLOSING CONNECTION TO CLIENT...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
+															close_connection(clientfd);
+															return NULL;
+														} else {
+															printf("error!\n");
+															exit(-1); // unknown write() error
+														}
+													} else {
+														printf("done!\n");
+													}
 												}
 												struct pollfd fds[2]; // poll() struct array
 												fds[0].fd = destfd;
@@ -1103,17 +1257,45 @@ void *handle_socks_request(void *args) {
 													if(timeout_return > 0) {
 														if(fds[0].revents & POLLIN) {
 															memset(package, 0, sizeof(package)); // zero out package buffer to avoid garbage data
-															readbytes = read(destfd, package, sizeof(package)); // try to read() a answer from dest
-															if(readbytes == 0) {
-																gettimeofday(&current_time, NULL); printf("[%.6f][%s] dest closed the connection : closing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-																gettimeofday(&current_time, NULL); printf("[%.6f][%s] CLOSING CONNECTION TO DEST...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-																close_connection(destfd);
-																gettimeofday(&current_time, NULL); printf("[%.6f][%s] CLOSING CONNECTION TO CLIENT...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-																close_connection(clientfd);
-																return NULL;
-															}
-															else if(readbytes < 0) {
-																exit(-1); // unknown read() error
+															if(tls_decrypt_enabled == true && is_tls == true) {
+																while((ssl_rtrn = SSL_read_ex(tls_dest, package, sizeof(package), &readbytes)) != 1) {
+																	switch(SSL_get_error(tls_dest, ssl_rtrn)) {
+																		case SSL_ERROR_WANT_READ:
+																			usleep(1000);
+																			continue;
+																		case SSL_ERROR_WANT_WRITE:
+																			usleep(1000);
+																			continue;
+																		case SSL_ERROR_ZERO_RETURN:
+																			gettimeofday(&current_time, NULL); printf("[%.6f][%s] dest closed the connection : closing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
+																			SSL_free(tls_dest);
+																			SSL_CTX_free(tls_dest_ctx);
+																			SSL_free(tls_client);
+																			SSL_CTX_free(tls_client_ctx);
+																			if(close(destfd) < 0) {
+																				exit(-1); // unknown close() error
+																			}
+																			gettimeofday(&current_time, NULL); printf("[%.6f][%s] CLOSING CONNECTION TO CLIENT...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
+																			close_connection(clientfd);
+																			return NULL;	
+																		default:
+																			exit(-1); // unknown SSL_read_ex() error
+																	}
+																}
+															} else {
+																readbytes = read(destfd, package, sizeof(package)); // try to read() a answer from dest
+																if(readbytes == 0) {
+																	gettimeofday(&current_time, NULL); printf("[%.6f][%s] dest closed the connection : closing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
+																	if(close(destfd) < 0) {
+																		exit(-1); // unknown close() error
+																	}
+																	gettimeofday(&current_time, NULL); printf("[%.6f][%s] CLOSING CONNECTION TO CLIENT...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
+																	close_connection(clientfd);
+																	return NULL;
+																}
+																else if(readbytes < 0) {
+																	exit(-1); // unknown read() error
+																}
 															}
 															// Forward the response to the client
 															if(hexdump_enabled == true) {
@@ -1148,43 +1330,102 @@ void *handle_socks_request(void *args) {
 																logcount_replys++;
 															}
 															gettimeofday(&current_time, NULL); printf("[%.6f][%s] FORWARDING REPLY TO CLIENT... ", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-															if(send(clientfd, package, readbytes, MSG_NOSIGNAL) < 0) { // forward the answer to the client
-																if(errno == ENOTCONN || errno == EPIPE || errno == ECONNRESET) {
-																	gettimeofday(&current_time, NULL); printf("\n[%.6f][%s] client closed the connection : continuing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-																	if(close(clientfd) < 0) {
-																		exit(-1);
+															if(tls_decrypt_enabled == true && is_tls == true) {
+																while((ssl_rtrn = SSL_write(tls_client, package, readbytes)) <= 0) {
+																	switch(SSL_get_error(tls_client, ssl_rtrn)) {
+																		case SSL_ERROR_WANT_READ:
+																			usleep(1000);
+																			continue;
+																		case SSL_ERROR_WANT_WRITE:
+																			usleep(1000);
+																			continue;
+																		case SSL_ERROR_ZERO_RETURN:
+																			gettimeofday(&current_time, NULL); printf("\n[%.6f][%s] client closed the connection : closing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
+																			SSL_free(tls_dest);
+																			SSL_CTX_free(tls_dest_ctx);
+																			SSL_free(tls_client);
+																			SSL_CTX_free(tls_client_ctx);
+																			if(close(clientfd) < 0) {
+																				exit(-1); // unknown close() error
+																			}
+																			gettimeofday(&current_time, NULL); printf("[%.6f][%s] CLOSING CONNECTION TO DEST...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
+																			close_connection(destfd);
+																			return NULL;
+																		default:
+																			printf("error!\n");
+																			exit(-1); // unknown SSL_write() error
 																	}
-																	gettimeofday(&current_time, NULL); printf("[%.6f][%s] CLOSING CONNECTION TO DEST...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-																	close_connection(destfd);
-																	return NULL;
-																} else {
-																	exit(-1); // unknown write() error
 																}
-															} else {
 																printf("done!\n");
+															} else {
+																if(send(clientfd, package, readbytes, MSG_NOSIGNAL) < 0) { // forward the answer to the client
+																	if(errno == ENOTCONN || errno == EPIPE || errno == ECONNRESET) {
+																		gettimeofday(&current_time, NULL); printf("\n[%.6f][%s] client closed the connection : continuing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
+																		if(close(clientfd) < 0) {
+																			exit(-1);
+																		}
+																		gettimeofday(&current_time, NULL); printf("[%.6f][%s] CLOSING CONNECTION TO DEST...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
+																		close_connection(destfd);
+																		return NULL;
+																	} else {
+																		printf("error!\n");
+																		exit(-1); // unknown write() error
+																	}
+																} else {
+																	printf("done!\n");
+																}
 															}
 														}
 														else if(fds[0].revents & POLLHUP) {
 															gettimeofday(&current_time, NULL); printf("[%.6f][%s] dest closed the connection : closing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-															gettimeofday(&current_time, NULL); printf("[%.6f][%s] CLOSING CONNECTION TO DEST...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-															close_connection(destfd);
+															if(close(destfd) < 0) {
+																exit(-1); // unknown close() error
+															}
 															gettimeofday(&current_time, NULL); printf("[%.6f][%s] CLOSING CONNECTION TO CLIENT...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 															close_connection(clientfd);
 															return NULL;
 														}
 														if(fds[1].revents & POLLIN) {
 															memset(package, 0, sizeof(package)); // zero out package buffer to avoid garbage data
-															readbytes = read(clientfd, package, sizeof(package)); // try to read() a new request from client
-															if(readbytes == 0) {
-																gettimeofday(&current_time, NULL); printf("[%.6f][%s] client closed the connection : closing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-																gettimeofday(&current_time, NULL); printf("[%.6f][%s] CLOSING CONNECTION TO DEST...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-																close_connection(destfd);
-																gettimeofday(&current_time, NULL); printf("[%.6f][%s] CLOSING CONNECTION TO CLIENT...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-																close_connection(clientfd);
-																return NULL;
-															}
-															else if(readbytes < 0) {
-																exit(-1); // unknown read() error
+															if(tls_decrypt_enabled == true && is_tls == true) {
+																while((ssl_rtrn = SSL_read_ex(tls_client, package, sizeof(package), &readbytes)) != 1) {
+																	switch(SSL_get_error(tls_client, ssl_rtrn)) {
+																		case SSL_ERROR_WANT_READ:
+																			usleep(1000);
+																			continue;
+																		case SSL_ERROR_WANT_WRITE:
+																			usleep(1000);
+																			continue;
+																		case SSL_ERROR_ZERO_RETURN:
+																			gettimeofday(&current_time, NULL); printf("[%.6f][%s] client closed the connection : closing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
+																			SSL_free(tls_dest);
+																			SSL_CTX_free(tls_dest_ctx);
+																			SSL_free(tls_client);
+																			SSL_CTX_free(tls_client_ctx);
+																			if(close(clientfd) < 0) {
+																				exit(-1); // unknown close() error
+																			}
+																			gettimeofday(&current_time, NULL); printf("[%.6f][%s] CLOSING CONNECTION TO DEST...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
+																			close_connection(destfd);
+																			return NULL;
+																		default:
+																			exit(-1); // unknown SSL_read_ex() error
+																	}
+																}
+															} else {
+																readbytes = read(clientfd, package, sizeof(package)); // try to read() a new request from client
+																if(readbytes == 0) {
+																	gettimeofday(&current_time, NULL); printf("[%.6f][%s] client closed the connection : closing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
+																	if(close(clientfd) < 0) {
+																		exit(-1); // unknown close() error
+																	}
+																	gettimeofday(&current_time, NULL); printf("[%.6f][%s] CLOSING CONNECTION TO DEST...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
+																	close_connection(destfd);
+																	return NULL;
+																}
+																else if(readbytes < 0) {
+																	exit(-1); // unknown read() error
+																}
 															}
 															// Forward the new request to the dest
 															if(hexdump_enabled == true) {
@@ -1227,28 +1468,59 @@ void *handle_socks_request(void *args) {
 																logcount_requests++;
 															}
 															gettimeofday(&current_time, NULL); printf("[%.6f][%s] FORWARDING REQUEST TO DEST... ", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-															if(send(destfd, package, readbytes, MSG_NOSIGNAL) < 0) { // forward the request
-																if(errno == ENOTCONN || errno == EPIPE || errno == ECONNRESET) {
-																	gettimeofday(&current_time, NULL); printf("\n[%.6f][%s] dest closed the connection : continuing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-																	if(close(destfd) < 0) {
-																		exit(-1);
+															if(tls_decrypt_enabled == true && is_tls == true) {
+																while((ssl_rtrn = SSL_write(tls_dest, package, readbytes)) <= 0) {
+																	switch(SSL_get_error(tls_dest, ssl_rtrn)) {
+																		case SSL_ERROR_WANT_READ:
+																			usleep(1000);
+																			continue;
+																		case SSL_ERROR_WANT_WRITE:
+																			usleep(1000);
+																			continue;
+																		case SSL_ERROR_ZERO_RETURN:
+																			gettimeofday(&current_time, NULL); printf("\n[%.6f][%s] dest closed the connection : closing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
+																			SSL_free(tls_dest);
+																			SSL_CTX_free(tls_dest_ctx);
+																			SSL_free(tls_client);
+																			SSL_CTX_free(tls_client_ctx);
+																			if(close(destfd) < 0) {
+																				exit(-1); // unknown close() error
+																			}
+																			gettimeofday(&current_time, NULL); printf("[%.6f][%s] CLOSING CONNECTION TO CLIENT...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
+																			close_connection(clientfd);
+																			return NULL;
+																		default:
+																			printf("error!\n");
+																			exit(-1); // unknown SSL_write() error
 																	}
-																	gettimeofday(&current_time, NULL); printf("[%.6f][%s] CLOSING CONNECTION TO CLIENT...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-																	close_connection(clientfd);
-																	return NULL;
-																} else {
-																	exit(-1); // unknown write() error
 																}
-															} else {
 																printf("done!\n");
+															} else {
+																if(send(destfd, package, readbytes, MSG_NOSIGNAL) < 0) { // forward the request
+																	if(errno == ENOTCONN || errno == EPIPE || errno == ECONNRESET) {
+																		gettimeofday(&current_time, NULL); printf("\n[%.6f][%s] dest closed the connection : continuing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
+																		if(close(destfd) < 0) {
+																			exit(-1);
+																		}
+																		gettimeofday(&current_time, NULL); printf("[%.6f][%s] CLOSING CONNECTION TO CLIENT...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
+																		close_connection(clientfd);
+																		return NULL;
+																	} else {
+																		printf("error!\n");
+																		exit(-1); // unknown write() error
+																	}
+																} else {
+																	printf("done!\n");
+																}
 															}
 														}
 														else if(fds[1].revents & POLLHUP) {
 															gettimeofday(&current_time, NULL); printf("[%.6f][%s] client closed the connection : closing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
+															if(close(clientfd) < 0) {
+																exit(-1); // unknown close() error
+															}
 															gettimeofday(&current_time, NULL); printf("[%.6f][%s] CLOSING CONNECTION TO DEST...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 															close_connection(destfd);
-															gettimeofday(&current_time, NULL); printf("[%.6f][%s] CLOSING CONNECTION TO CLIENT...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-															close_connection(clientfd);
 															return NULL;
 														}
 													}

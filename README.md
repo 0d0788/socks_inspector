@@ -18,6 +18,3 @@
   PACKAGETYPE = either request or reply</br>
   RANDOMVALUE = random value generated with arc4random(), one for each connected client</br>
   COUNT = the request/reply count (if there are multiple requests/replies for one destination, HTTP keep-alive connections for example)
-
-  ### TODO
-    - Add decrypting functionality for SSL/TLS traffic
