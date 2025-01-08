@@ -262,6 +262,7 @@ void *handle_socks_request(void *args) {
 	char dest_ip[INET_ADDRSTRLEN+1]; // ip address of the dest +1 for null terminator
 	memset(dest_ip, 0, sizeof(dest_ip)); // zero the buffer
 	uint32_t dest_addr = 0; // dest ipv4 in network byte order used by connect()
+	uint16_t dest_port = 0; // dest port in network byte order used by connect()
 	short timeout_return; // the value returned by timeout()
 	SSL_CTX *tls_client_ctx; // TLS client context
 	SSL_CTX *tls_dest_ctx; // TLS dest context
@@ -290,7 +291,7 @@ void *handle_socks_request(void *args) {
 		uint8_t reserved;
 		uint8_t address_type;
 		uint8_t dst_address[4]; // 4 octets for IPv4 address
-		uint16_t dst_port;
+		uint8_t dst_port[2]; // 2 octets for port number
 	} SOCKS5_request_details;
 	SOCKS5_request_details request_details;
 	memset(&request_details, 0, sizeof(SOCKS5_request_details));
@@ -376,7 +377,10 @@ void *handle_socks_request(void *args) {
 							request_details.dst_address[2] = *(package+6);
 							request_details.dst_address[3] = *(package+7);
 							memcpy(&dest_addr, request_details.dst_address, 4);
-							request_details.dst_port = (package[8] << 8) | package[9]; // copy port
+							//request_details.dst_port = (package[8] << 8) | package[9]; // copy port
+							request_details.dst_port[0] = *(package+8);
+							request_details.dst_port[1] = *(package+9);
+							memcpy(&dest_port, request_details.dst_port, 2);
 							request_reply.version = 0x05;
 							request_reply.reply_code = 0x00; // connection succeeded
 							request_reply.reserved = 0x00;
@@ -537,9 +541,9 @@ void *handle_socks_request(void *args) {
 								}
 								if(forwarding_enabled == true) {
 									// forwarding and answer processing
-									gettimeofday(&current_time, NULL); printf("[%.6f][%s] forwarding to :: %u.%u.%u.%u:%u\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string, request_details.dst_address[0], request_details.dst_address[1], request_details.dst_address[2], request_details.dst_address[3], request_details.dst_port);
+									gettimeofday(&current_time, NULL); printf("[%.6f][%s] forwarding to :: %u.%u.%u.%u:%u\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string, request_details.dst_address[0], request_details.dst_address[1], request_details.dst_address[2], request_details.dst_address[3], ntohs(dest_port));
 									gettimeofday(&current_time, NULL); printf("[%.6f][%s] CONNECTING TO DEST... ", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-									destfd = open_socket((bool) false, dest_addr, htons(request_details.dst_port)); // create destination socket and connect it to destination
+									destfd = open_socket((bool) false, dest_addr, dest_port); // create destination socket and connect it to destination
 									timeout_return = timeout(destfd, POLLOUT, 5000);
 									if(timeout_return & POLLOUT) { // wait for the destfd socket to become writeable (connected)
 										printf("done!\n");
@@ -965,7 +969,10 @@ void *handle_socks_request(void *args) {
 								dst_domain[count] = *(package+(5+count));
 							}
 							dst_domain[dst_domain_length] = '\0'; // set the null terminator for the getaddrinfo() to resolv the domain
-							request_details.dst_port = (package[5 + dst_domain_length] << 8) | package[6 + dst_domain_length]; // copy port
+							//request_details.dst_port = (package[5 + dst_domain_length] << 8) | package[6 + dst_domain_length]; // copy port
+							request_details.dst_port[0] = package[5+dst_domain_length];
+							request_details.dst_port[1] = package[6+dst_domain_length];
+							memcpy(&dest_port, request_details.dst_port, 2);
 							request_reply.version = 0x05;
 							request_reply.reply_code = 0x00; // connection succeeded
 							request_reply.reserved = 0x00;
@@ -1063,10 +1070,10 @@ void *handle_socks_request(void *args) {
 											for(int count = 0; count < dst_domain_length; count++) {
 												printf("%c", dst_domain[count]);
 											}
-											printf(":%u\n", request_details.dst_port);
+											printf(":%u\n", ntohs(dest_port));
 											gettimeofday(&current_time, NULL); printf("[%.6f][%s] resolved dest ip :: %s\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string, dest_ip);
 											gettimeofday(&current_time, NULL); printf("[%.6f][%s] CONNECTING TO DEST... ", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-											destfd = open_socket((bool) false, dst_addr->sin_addr.s_addr, htons(request_details.dst_port)); // create destination socket and connect it to destination
+											destfd = open_socket((bool) false, dst_addr->sin_addr.s_addr, dest_port); // create destination socket and connect it to destination
 											timeout_return = timeout(destfd, POLLOUT, 5000);
 											if(timeout_return & POLLOUT) { // wait for the destfd socket to become writeable (connected)
 												printf("done!\n");
@@ -1386,7 +1393,7 @@ int main(int argc, char *argv[]) {
 	int argv_pos = check_argv(argc, argv, "--port");
 	if(argv_pos == -1) {
 		gettimeofday(&current_time, NULL); printf("[%.6f] no port number specified: using default value 1080\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
-		listenfd = open_socket((bool) true, INADDR_ANY, (uint16_t) ntohs(1080));
+		listenfd = open_socket((bool) true, INADDR_ANY, (uint16_t) htons(1080));
 	} else {
 		if(argc < argv_pos+2) { // check if there is value after --port argument
 			gettimeofday(&current_time, NULL); printf("[%.6f] no port number after --port argument : returning\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
@@ -1407,7 +1414,7 @@ int main(int argc, char *argv[]) {
 				exit(1);
 			}
 			gettimeofday(&current_time, NULL); printf("[%.6f] using port number : %u\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), listen_port);
-			listenfd = open_socket((bool) true, INADDR_ANY, ntohs(listen_port));
+			listenfd = open_socket((bool) true, INADDR_ANY, htons(listen_port));
 		}
 	}
 	bool logging;
