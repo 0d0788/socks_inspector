@@ -6,6 +6,7 @@
   ```--forward```    : enable forwarding of traffic</br>
   ```--log PATH```   : enable logging of the requests and received answers in binary format</br>
   ```--hexdump```    : print hexdump of each request and answer in STDOUT</br>
+  ```--tls-decrypt```: enable TLS MITM decryption</br>
   ```--edit```       : hex edit requests</br>
   ```--threaded```   : parallelize connection handling (not compatible with --edit)
 
