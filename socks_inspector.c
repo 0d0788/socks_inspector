@@ -1,6 +1,7 @@
 /*
  * SOCKS Protocol Version 5 : implementation based on RFC 1928
- * Copyright (C) 2024 www.github.com/0d0788. All rights reserved.
+ * SSL/TLS MITM decryption : based on openssl library from the OpenSSL project
+ * Copyright (C) 2025 www.github.com/0d0788. All rights reserved.
  * This program is licensed under the GPLv2+. See LICENSE for more information.
  */
 
@@ -208,19 +209,6 @@ void get_local_ip_and_port(int sockfd, uint8_t ip_buffer[4], uint16_t port) {
 	port = local_addr.sin_port;
 }
 
-char *get_rand_num_as_string() { // returns a pointer to a random value as string in memory
-	int rand_value = arc4random();
-	int length = snprintf(NULL, 0, "%u", rand_value);
-	char *buffer_rand = malloc(length+1); // +1 for null terminator
-	if(buffer_rand == NULL) {
-		char msg[] = "malloc() memory allocation failed : quitting\n";
-		write(1, msg, sizeof(msg));
-		exit(-1); // unknown malloc() error / error while allocating memory
-	}
-	sprintf(buffer_rand, "%u", rand_value);
-	return buffer_rand;
-}
-
 void close_connection(int sockfd) { // helper to reduce code size
 	if(shutdown(sockfd, SHUT_RDWR) < 0) {
 		if(errno != ENOTCONN && errno != EPIPE && errno != ECONNRESET) {
@@ -233,7 +221,63 @@ void close_connection(int sockfd) { // helper to reduce code size
 }
 
 typedef struct {
-	int clientfd;
+	EVP_PKEY *new_ppkey;
+	X509 *new_cert;
+} tls_cert_and_pkey;
+
+void gen_tls_cert_and_pkey(tls_cert_and_pkey *new, unsigned char *CN_SAN, size_t CN_SAN_len) { // helper to reduce code size
+	/*
+	FILE *root_cert_file = fopen("rootCA.crt", "r");
+	if(root_cert_file == NULL) {
+		printf("failed to open root cert!\n");
+		exit(1);
+	}
+	X509 *root_ca_cert = PEM_read_X509(root_cert_file, NULL, NULL, NULL);
+	if(root_ca_cert == NULL) {
+		printf("failed to read root cert!\n");
+		exit(-1);
+	}
+	if(fclose(root_cert_file) != 0) {
+		exit(-1);
+	}
+	*/
+	FILE *root_pkey_file = fopen("rootCA.key", "r");
+	if(root_pkey_file == NULL) {
+		printf("failed to open root pkey!\n");
+		exit(1);
+	}
+	EVP_PKEY *root_ca_pkey = PEM_read_PrivateKey(root_pkey_file, NULL, NULL, NULL);
+	if(root_ca_pkey == NULL) {
+		printf("failed to read root pkey!\n");
+		exit(-1);
+	}
+	if(fclose(root_pkey_file) != 0) {
+		exit(-1);
+	}
+	EVP_PKEY *new_ppkey = EVP_RSA_gen(2048);
+	X509 *new_cert = X509_new();
+	X509_set_version(new_cert, X509_VERSION_3);
+	X509_NAME *new_crt_name = X509_NAME_new();
+	X509_NAME_add_entry_by_txt(new_crt_name, "CN", MBSTRING_ASC, CN_SAN, CN_SAN_len, -1, 0);
+	X509_set_subject_name(new_cert, new_crt_name);
+	X509_NAME_free(new_crt_name);
+	X509_EXTENSION *extension_san = X509_EXTENSION_new();
+	ASN1_OCTET_STRING *subject_alt_name_ASN1 = ASN1_OCTET_STRING_new();
+	ASN1_OCTET_STRING_set(subject_alt_name_ASN1, CN_SAN, CN_SAN_len);
+	X509_EXTENSION_create_by_NID(&extension_san, NID_subject_alt_name, 0, subject_alt_name_ASN1);
+	ASN1_OCTET_STRING_free(subject_alt_name_ASN1);
+	X509_add_ext(new_cert, extension_san, -1);
+	X509_EXTENSION_free(extension_san);
+	X509_set_pubkey(new_cert, new_ppkey);
+	EVP_MD *md = EVP_MD_fetch(NULL, "SHA2-256", "provider=default");
+	X509_sign(new_cert, root_ca_pkey, md);
+	EVP_MD_free(md);
+	new->new_ppkey = new_ppkey;
+	new->new_cert = new_cert;
+	return;
+}
+
+typedef struct {
 	struct timeval start_time;
 	bool forwarding_enabled;
 	bool hexdump_enabled;
@@ -241,6 +285,9 @@ typedef struct {
 	bool logging_enabled;
 	char *logpath;
 	bool tls_decrypt_enabled;
+	unsigned char *CN_SAN;
+	size_t CN_SAN_len;
+	int clientfd;
 	struct sockaddr_in clientaddr;
 } socks_handler_args;
 
@@ -254,6 +301,8 @@ void *handle_socks_request(void *args) {
 	bool logging_enabled = func_args->logging_enabled;
 	char *logpath = func_args->logpath;
 	bool tls_decrypt_enabled = func_args->tls_decrypt_enabled;
+	unsigned char *CN_SAN = func_args->CN_SAN;
+	size_t CN_SAN_len = func_args->CN_SAN_len;
 	int clientfd = func_args->clientfd; // accepted incoming connection from listenfd
 	int destfd; // destination where packages are forwarded to (if enabled)
 	struct sockaddr_in clientaddr = func_args->clientaddr;
@@ -310,7 +359,10 @@ void *handle_socks_request(void *args) {
 	uint16_t local_port; // the local port used to fill request reply bnd_port field
 	ssize_t readbytes; // used to safe return value of read()
 
-	char *random_string = get_rand_num_as_string(); // random value used in logfilename to guarantee unique file names and in the STDOUT messages for this connection
+	uint32_t rand_value = arc4random();
+	int length = snprintf(NULL, 0, "%u", rand_value);
+	char random_string[length+1]; // random value used in logfilename to guarantee unique file names and in the STDOUT messages for this connection
+	sprintf(random_string, "%u", rand_value);
 
 	int logcount_requests = 0; // log counter used for unique filenames
 	int logcount_replys = 0; // log counter used for unique filenames
@@ -346,6 +398,7 @@ void *handle_socks_request(void *args) {
 					count++;
 				}
 			}
+			free(package_greeting);
 			if(is_supported == 1) { // NO AUTH is supported (the only AUTH method supported by this proxy)
 				method_selection.version = 0x05;
 				method_selection.method = 0x00; // select NO AUTH method
@@ -414,15 +467,17 @@ void *handle_socks_request(void *args) {
 										tls_client_ctx = SSL_CTX_new(TLS_server_method());
 										uint64_t opts = SSL_OP_IGNORE_UNEXPECTED_EOF | SSL_OP_NO_RENEGOTIATION;
 										SSL_CTX_set_options(tls_client_ctx, opts);
+										tls_cert_and_pkey cert_and_pkey;
+										gen_tls_cert_and_pkey(&cert_and_pkey, CN_SAN, CN_SAN_len);
 										gettimeofday(&current_time, NULL); printf("[%.6f][%s] LOADING TLS CERT... ", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-										if(SSL_CTX_use_certificate_file(tls_client_ctx, "cert.pem", SSL_FILETYPE_PEM) <= 0) { // load TLS server cert
+										if(SSL_CTX_use_certificate(tls_client_ctx, cert_and_pkey.new_cert) <= 0) { // load TLS server cert
 											printf("failed!\n");
 											exit(-1);
 										} else {
 											printf("done!\n");
 										}
 										gettimeofday(&current_time, NULL); printf("[%.6f][%s] LOADING TLS PRIVATE KEY... ", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-										if(SSL_CTX_use_PrivateKey_file(tls_client_ctx, "pkey.pem", SSL_FILETYPE_PEM) <= 0) { // load TLS server private key
+										if(SSL_CTX_use_PrivateKey(tls_client_ctx, cert_and_pkey.new_ppkey) <= 0) { // load TLS server private key
 											printf("failed! possible key/cert mismatch???\n");
 											exit(-1);
 										} else {
@@ -569,7 +624,7 @@ void *handle_socks_request(void *args) {
 													exit(-1); // unknown getaddrinfo() error
 												}
 											} else { // hostname was found
-												while(dst_info != NULL) { // loop through dst_info until a suitable hostname is found
+												while(dst_info != NULL) { // loop through dst_info until a hostname for a IPv4 address is found
 													if(dst_info->ai_family == AF_INET && dst_info->ai_canonname != NULL) {
 														snprintf(tls_sni, sizeof(tls_sni), "%s", dst_info->ai_canonname);
 														SSL_set_tlsext_host_name(tls_dest, tls_sni); // set the TLS SNI client hello extension
@@ -583,6 +638,7 @@ void *handle_socks_request(void *args) {
 													printf(" could not be resolved : TLS SNI stays empty\n");
 												}
 											}
+											freeaddrinfo(dst_info);
 											gettimeofday(&current_time, NULL); printf("[%.6f][%s] ATTEMPTING TLS HANDSHAKE WITH DEST... ", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 											while((ssl_rtrn = SSL_connect(tls_dest)) != 1) { // Attempt an TLS handshake with the dest
 												switch(SSL_get_error(tls_dest, ssl_rtrn)) {
@@ -1144,6 +1200,7 @@ void *handle_socks_request(void *args) {
 											printf(" could not be resolved : ignoring\n");
 											gettimeofday(&current_time, NULL); printf("[%.6f][%s] CLOSING CONNECTION TO CLIENT...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 											close_connection(clientfd);
+											freeaddrinfo(dst_info);
 											return NULL;
 										} else {
 											exit(-1); // unknown getaddrinfo() error
@@ -1167,6 +1224,7 @@ void *handle_socks_request(void *args) {
 											gettimeofday(&current_time, NULL); printf("[%.6f][%s] resolved dest ip :: %s\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string, dest_ip);
 											gettimeofday(&current_time, NULL); printf("[%.6f][%s] CONNECTING TO DEST... ", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 											destfd = open_socket((bool) false, dst_addr->sin_addr.s_addr, dest_port); // create destination socket and connect it to destination
+											freeaddrinfo(dst_info);
 											timeout_return = timeout(destfd, POLLOUT, 5000);
 											if(timeout_return & POLLOUT) { // wait for the destfd socket to become writeable (connected)
 												printf("done!\n");
@@ -1547,6 +1605,7 @@ void *handle_socks_request(void *args) {
 											gettimeofday(&current_time, NULL); printf("[%.6f][%s] no IPv4 address could be found for the DOMAIN : ignoring\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 											gettimeofday(&current_time, NULL); printf("[%.6f][%s] CLOSING CONNECTION TO CLIENT...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 											close_connection(clientfd);
+											freeaddrinfo(dst_info);
 											return NULL;
 										}
 									}
@@ -1641,6 +1700,7 @@ void *handle_socks_request(void *args) {
 				return NULL;
 			}
 		} else { // if the version identifier is not 5, close the connection and wait for a new one
+			free(package_greeting);
 			gettimeofday(&current_time, NULL); printf("[%.6f][%s] new connection is not SOCKS version 5 : ignoring\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 			gettimeofday(&current_time, NULL); printf("[%.6f][%s] CLOSING CONNECTION TO CLIENT...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 			close_connection(clientfd);
@@ -1662,6 +1722,8 @@ int main(int argc, char *argv[]) {
 	short timeout_return; // the value returned by timeout()
 
 	// handling shell arguments
+	socks_handler_args *args = malloc(sizeof(socks_handler_args));
+	args->start_time = start_time;
 	int argv_pos = check_argv(argc, argv, "--port");
 	if(argv_pos == -1) {
 		gettimeofday(&current_time, NULL); printf("[%.6f] no port number specified: using default value 1080\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
@@ -1772,9 +1834,42 @@ int main(int argc, char *argv[]) {
 		gettimeofday(&current_time, NULL); printf("[%.6f] decrypting of TLS requests enabled\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
 		tls_decrypt = true;
 	}
+	argv_pos = check_argv(argc, argv, "--CN_SAN");
+	if(argv_pos == -1) {
+		if(tls_decrypt == true) {
+			gettimeofday(&current_time, NULL); printf("[%.6f] no X509 CN/SAN specified : using default value\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+			args->CN_SAN = "localhost";
+			args->CN_SAN_len = 9;
+		}
+	} else {
+		if(argc < argv_pos+2) {
+			gettimeofday(&current_time, NULL); printf("[%.6f] no X509 CN/SAN after --CN_SAN argument : returning\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+			exit(1);
+		}
+		if(argc < argv_pos+3) {
+			gettimeofday(&current_time, NULL); printf("[%.6f] no X509 CN/SAN size after --CN_SAN argument : returning\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+			exit(1);
+		}
+		if(tls_decrypt == true) {
+			args->CN_SAN = argv[argv_pos+1];
+			char *s = argv[argv_pos+2];
+			while (*s) { // check if that value is numeric and not something else
+				if (isdigit(*s) == 0) {
+					gettimeofday(&current_time, NULL); printf("[%.6f] X509 CN/SAN size specified after the --CN_SAN argument is not numeric : returning\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+					exit(1);
+				} else {
+					s++;
+				}
+			}
+			args->CN_SAN_len = atoi(argv[argv_pos+2]);
+			gettimeofday(&current_time, NULL); printf("[%.6f] using X509 CN/SAN %s of size %u\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), args->CN_SAN, args->CN_SAN_len);
+		} else {
+			gettimeofday(&current_time, NULL); printf("[%.6f] ignoring --CN_SAN : only used when --tls-decrypt is set\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+			args->CN_SAN = NULL;
+			args->CN_SAN_len = 0;
+		}
+	}
 
-	socks_handler_args *args = malloc(sizeof(socks_handler_args));
-	args->start_time = start_time;
 	args->forwarding_enabled = forward;
 	args->hexdump_enabled = hexd;
 	args->editing_enabled = editing;
@@ -1784,7 +1879,8 @@ int main(int argc, char *argv[]) {
 
 	while(1) { // infinite server loop	
 		gettimeofday(&current_time, NULL); printf("[%.6f] Listening for new connections...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
-		timeout_return = timeout(listenfd, POLLIN, 600000); // wait 600000 millisecs (10 mins) for incoming connections
+		//timeout_return = timeout(listenfd, POLLIN, 600000); // wait 600000 millisecs (10 mins) for incoming connections
+		timeout_return = timeout(listenfd, POLLIN, 30000);
 		if(timeout_return & POLLIN) { // new connection came in
 			gettimeofday(&current_time, NULL); printf("[%.6f] new (SYN) connection request came in!\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
 			struct sockaddr_in clientaddr;
@@ -1797,7 +1893,7 @@ int main(int argc, char *argv[]) {
 					// create thread and handle client
 					pthread_t tid;
 					if(pthread_create(&tid, NULL, handle_socks_request, args) != 0) {
-						close(clientfd);
+						close_connection(clientfd);
 						gettimeofday(&current_time, NULL); printf("[%.6f] error creating new thread : quitting\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
 						exit(-1); // unknown pthread_create() error
 					}
@@ -1811,7 +1907,7 @@ int main(int argc, char *argv[]) {
 		}
 		else if(timeout_return == 0) {
 			gettimeofday(&current_time, NULL); printf("[%.6f] proxy didn't receive new connections in 10 minutes : closing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
-			exit(1);
+			return 0;
 		}
 	}
 }
