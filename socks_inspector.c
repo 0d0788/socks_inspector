@@ -225,7 +225,7 @@ typedef struct {
 	X509 *new_cert;
 } tls_cert_and_pkey;
 
-void gen_tls_cert_and_pkey(tls_cert_and_pkey *new, unsigned char *CN_SAN, size_t CN_SAN_len) { // helper to reduce code size
+int gen_tls_cert_and_pkey(tls_cert_and_pkey *new, unsigned char *CN_SAN, size_t CN_SAN_len) { // helper to reduce code size
 	/*
 	FILE *root_cert_file = fopen("rootCA.crt", "r");
 	if(root_cert_file == NULL) {
@@ -256,25 +256,32 @@ void gen_tls_cert_and_pkey(tls_cert_and_pkey *new, unsigned char *CN_SAN, size_t
 	}
 	EVP_PKEY *new_ppkey = EVP_RSA_gen(2048);
 	X509 *new_cert = X509_new();
-	X509_set_version(new_cert, X509_VERSION_3);
 	X509_NAME *new_crt_name = X509_NAME_new();
-	X509_NAME_add_entry_by_txt(new_crt_name, "CN", MBSTRING_ASC, CN_SAN, CN_SAN_len, -1, 0);
-	X509_set_subject_name(new_cert, new_crt_name);
-	X509_NAME_free(new_crt_name);
 	X509_EXTENSION *extension_san = X509_EXTENSION_new();
 	ASN1_OCTET_STRING *subject_alt_name_ASN1 = ASN1_OCTET_STRING_new();
+	X509_set_version(new_cert, X509_VERSION_3);
+	ASN1_INTEGER_set(X509_get_serialNumber(new_cert), 1);
+	X509_gmtime_adj(X509_get_notBefore(new_cert), 0);
+	X509_gmtime_adj(X509_get_notAfter(new_cert), 31536000L);
+	X509_NAME_add_entry_by_txt(new_crt_name, "CN", MBSTRING_ASC, CN_SAN, CN_SAN_len, -1, 0);
+	X509_set_subject_name(new_cert, new_crt_name);
 	ASN1_OCTET_STRING_set(subject_alt_name_ASN1, CN_SAN, CN_SAN_len);
 	X509_EXTENSION_create_by_NID(&extension_san, NID_subject_alt_name, 0, subject_alt_name_ASN1);
-	ASN1_OCTET_STRING_free(subject_alt_name_ASN1);
 	X509_add_ext(new_cert, extension_san, -1);
-	X509_EXTENSION_free(extension_san);
 	X509_set_pubkey(new_cert, new_ppkey);
 	EVP_MD *md = EVP_MD_fetch(NULL, "SHA2-256", "provider=default");
 	X509_sign(new_cert, root_ca_pkey, md);
+	ASN1_OCTET_STRING_free(subject_alt_name_ASN1);
+	X509_EXTENSION_free(extension_san);
+	X509_NAME_free(new_crt_name);
 	EVP_MD_free(md);
-	new->new_ppkey = new_ppkey;
-	new->new_cert = new_cert;
-	return;
+	if(X509_verify(new_cert, new_ppkey) == 1) {
+		new->new_ppkey = new_ppkey;
+		new->new_cert = new_cert;
+		return 0;
+	} else {
+		return -1;
+	}
 }
 
 typedef struct {
@@ -467,11 +474,21 @@ void *handle_socks_request(void *args) {
 										tls_client_ctx = SSL_CTX_new(TLS_server_method());
 										uint64_t opts = SSL_OP_IGNORE_UNEXPECTED_EOF | SSL_OP_NO_RENEGOTIATION;
 										SSL_CTX_set_options(tls_client_ctx, opts);
+										gettimeofday(&current_time, NULL); printf("[%.6f][%s] GENERATING TLS CERT... ", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 										tls_cert_and_pkey cert_and_pkey;
-										gen_tls_cert_and_pkey(&cert_and_pkey, CN_SAN, CN_SAN_len);
+										if(gen_tls_cert_and_pkey(&cert_and_pkey, CN_SAN, CN_SAN_len) < 0) {
+											printf("failed! signature could not be verified\n");
+											SSL_CTX_free(tls_client_ctx);
+											close_connection(clientfd);
+											exit(-1);
+										} else {
+											printf("done!\n");
+										}
 										gettimeofday(&current_time, NULL); printf("[%.6f][%s] LOADING TLS CERT... ", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 										if(SSL_CTX_use_certificate(tls_client_ctx, cert_and_pkey.new_cert) <= 0) { // load TLS server cert
 											printf("failed!\n");
+											SSL_CTX_free(tls_client_ctx);
+											close_connection(clientfd);
 											exit(-1);
 										} else {
 											printf("done!\n");
@@ -479,10 +496,14 @@ void *handle_socks_request(void *args) {
 										gettimeofday(&current_time, NULL); printf("[%.6f][%s] LOADING TLS PRIVATE KEY... ", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 										if(SSL_CTX_use_PrivateKey(tls_client_ctx, cert_and_pkey.new_ppkey) <= 0) { // load TLS server private key
 											printf("failed! possible key/cert mismatch???\n");
+											SSL_CTX_free(tls_client_ctx);
+											close_connection(clientfd);
 											exit(-1);
 										} else {
 											printf("done!\n");
 										}
+										//EVP_PKEY_free(cert_and_pkey.new_ppkey);
+										//X509_free(cert_and_pkey.new_cert);
 										SSL_CTX_set_verify(tls_client_ctx, SSL_VERIFY_NONE, NULL);
 										tls_client = SSL_new(tls_client_ctx);
 										SSL_set_fd(tls_client, clientfd);
@@ -1062,20 +1083,36 @@ void *handle_socks_request(void *args) {
 										tls_client_ctx = SSL_CTX_new(TLS_server_method());
 										uint64_t opts = SSL_OP_IGNORE_UNEXPECTED_EOF | SSL_OP_NO_RENEGOTIATION;
 										SSL_CTX_set_options(tls_client_ctx, opts);
+										gettimeofday(&current_time, NULL); printf("[%.6f][%s] GENERATING TLS CERT... ", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
+										tls_cert_and_pkey cert_and_pkey;
+										if(gen_tls_cert_and_pkey(&cert_and_pkey, CN_SAN, CN_SAN_len) < 0) {
+											printf("failed! signature could not be verified\n");
+											SSL_CTX_free(tls_client_ctx);
+											close_connection(clientfd);
+											exit(-1);
+										} else {
+											printf("done!\n");
+										}
 										gettimeofday(&current_time, NULL); printf("[%.6f][%s] LOADING TLS CERT... ", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-										if(SSL_CTX_use_certificate_file(tls_client_ctx, "cert.pem", SSL_FILETYPE_PEM) <= 0) { // load TLS server cert
+										if(SSL_CTX_use_certificate(tls_client_ctx, cert_and_pkey.new_cert) <= 0) { // load TLS server cert
 											printf("failed!\n");
+											SSL_CTX_free(tls_client_ctx);
+											close_connection(clientfd);
 											exit(-1);
 										} else {
 											printf("done!\n");
 										}
 										gettimeofday(&current_time, NULL); printf("[%.6f][%s] LOADING TLS PRIVATE KEY... ", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-										if(SSL_CTX_use_PrivateKey_file(tls_client_ctx, "pkey.pem", SSL_FILETYPE_PEM) <= 0) { // load TLS server private key
+										if(SSL_CTX_use_PrivateKey(tls_client_ctx, cert_and_pkey.new_ppkey) <= 0) { // load TLS server private key
 											printf("failed! possible key/cert mismatch???\n");
+											SSL_CTX_free(tls_client_ctx);
+											close_connection(clientfd);
 											exit(-1);
 										} else {
 											printf("done!\n");
 										}
+										//EVP_PKEY_free(cert_and_pkey.new_ppkey);
+										//X509_free(cert_and_pkey.new_cert);
 										SSL_CTX_set_verify(tls_client_ctx, SSL_VERIFY_NONE, NULL);
 										tls_client = SSL_new(tls_client_ctx);
 										SSL_set_fd(tls_client, clientfd);
@@ -1895,6 +1932,7 @@ int main(int argc, char *argv[]) {
 					if(pthread_create(&tid, NULL, handle_socks_request, args) != 0) {
 						close_connection(clientfd);
 						gettimeofday(&current_time, NULL); printf("[%.6f] error creating new thread : quitting\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+						free(args);
 						exit(-1); // unknown pthread_create() error
 					}
 					pthread_detach(tid);
@@ -1907,6 +1945,7 @@ int main(int argc, char *argv[]) {
 		}
 		else if(timeout_return == 0) {
 			gettimeofday(&current_time, NULL); printf("[%.6f] proxy didn't receive new connections in 10 minutes : closing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+			free(args);
 			return 0;
 		}
 	}
