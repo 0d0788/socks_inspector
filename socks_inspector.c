@@ -226,32 +226,35 @@ typedef struct {
 } tls_cert_and_pkey;
 
 int gen_tls_cert_and_pkey(tls_cert_and_pkey *new, unsigned char *CN_SAN, size_t CN_SAN_len) { // helper to reduce code size
-	/*
 	FILE *root_cert_file = fopen("rootCA.crt", "r");
 	if(root_cert_file == NULL) {
-		printf("failed to open root cert!\n");
+		printf("failed to open root cert file!\n");
 		exit(1);
 	}
-	X509 *root_ca_cert = PEM_read_X509(root_cert_file, NULL, NULL, NULL);
-	if(root_ca_cert == NULL) {
+	X509 *root_ca_cert = X509_new();
+	if(PEM_read_X509(root_cert_file, &root_ca_cert, NULL, NULL) == NULL) {
 		printf("failed to read root cert!\n");
 		exit(-1);
 	}
-	if(fclose(root_cert_file) != 0) {
-		exit(-1);
-	}
-	*/
-	FILE *root_pkey_file = fopen("rootCA.key", "r");
-	if(root_pkey_file == NULL) {
-		printf("failed to open root pkey!\n");
+	FILE *root_privkey_file = fopen("rootCA.key", "r");
+	if(root_privkey_file == NULL) {
+		printf("failed to open root privkey file!\n");
 		exit(1);
 	}
-	EVP_PKEY *root_ca_pkey = PEM_read_PrivateKey(root_pkey_file, NULL, NULL, NULL);
-	if(root_ca_pkey == NULL) {
-		printf("failed to read root pkey!\n");
+	EVP_PKEY *root_ca_privkey = EVP_PKEY_new();
+	if(PEM_read_PrivateKey(root_privkey_file, &root_ca_privkey, NULL, NULL) == NULL) {
+		printf("failed to read root privkey!\n");
 		exit(-1);
 	}
-	if(fclose(root_pkey_file) != 0) {
+	EVP_PKEY *root_ca_pubkey = X509_get_pubkey(root_ca_cert);
+	if(root_ca_pubkey == NULL) {
+		printf("failed to read root pubkey!\n");
+		exit(-1);
+	}
+	if(fclose(root_privkey_file) != 0) {
+		exit(-1);
+	}
+	if(fclose(root_cert_file) != 0) {
 		exit(-1);
 	}
 	EVP_PKEY *new_ppkey = EVP_RSA_gen(2048);
@@ -259,27 +262,53 @@ int gen_tls_cert_and_pkey(tls_cert_and_pkey *new, unsigned char *CN_SAN, size_t 
 	X509_NAME *new_crt_name = X509_NAME_new();
 	X509_EXTENSION *extension_san = X509_EXTENSION_new();
 	ASN1_OCTET_STRING *subject_alt_name_ASN1 = ASN1_OCTET_STRING_new();
-	X509_set_version(new_cert, X509_VERSION_3);
+	//X509_set_version(new_cert, X509_VERSION_3);
 	ASN1_INTEGER_set(X509_get_serialNumber(new_cert), 1);
 	X509_gmtime_adj(X509_get_notBefore(new_cert), 0);
 	X509_gmtime_adj(X509_get_notAfter(new_cert), 31536000L);
-	X509_NAME_add_entry_by_txt(new_crt_name, "CN", MBSTRING_ASC, CN_SAN, CN_SAN_len, -1, 0);
-	X509_set_subject_name(new_cert, new_crt_name);
+	if(X509_set_pubkey(new_cert, new_ppkey) != 1) {
+		printf("failed to add pubkey to cert!\n");
+		exit(-1);
+	}
+	if(X509_NAME_add_entry_by_txt(new_crt_name, "CN", MBSTRING_ASC, CN_SAN, CN_SAN_len, -1, 0) != 1) {
+		printf("failed to add COMMON NAME to subject name field!\n");
+		exit(-1);
+	}
+	if(X509_set_subject_name(new_cert, new_crt_name) != 1) {
+		printf("failed to set subject name field in cert!\n");
+		exit(-1);
+	}
+	if(X509_set_issuer_name(new_cert, X509_get_subject_name(root_ca_cert)) != 1) {
+		printf("failed to set issuer name field in cert!\n");
+		exit(-1);
+	}
 	ASN1_OCTET_STRING_set(subject_alt_name_ASN1, CN_SAN, CN_SAN_len);
-	X509_EXTENSION_create_by_NID(&extension_san, NID_subject_alt_name, 0, subject_alt_name_ASN1);
-	X509_add_ext(new_cert, extension_san, -1);
-	X509_set_pubkey(new_cert, new_ppkey);
+	if(X509_EXTENSION_create_by_NID(&extension_san, NID_subject_alt_name, 0, subject_alt_name_ASN1) == NULL) {
+		printf("failed to create SAN!\n");
+		exit(-1);
+	}
+	if(X509_add_ext(new_cert, extension_san, -1) != 1) {
+		printf("failed to add SAN to cert!\n");
+		exit(-1);
+	}
 	EVP_MD *md = EVP_MD_fetch(NULL, "SHA2-256", "provider=default");
-	X509_sign(new_cert, root_ca_pkey, md);
+	if(X509_sign(new_cert, root_ca_privkey, md) == 0) {
+		printf("failed to sign cert!\n");
+		exit(-1);
+	}
+	EVP_MD_free(md);
 	ASN1_OCTET_STRING_free(subject_alt_name_ASN1);
 	X509_EXTENSION_free(extension_san);
 	X509_NAME_free(new_crt_name);
-	EVP_MD_free(md);
-	if(X509_verify(new_cert, new_ppkey) == 1) {
+	EVP_PKEY_free(root_ca_privkey);
+	X509_free(root_ca_cert);
+	if(X509_verify(new_cert, root_ca_pubkey) == 1) {
 		new->new_ppkey = new_ppkey;
 		new->new_cert = new_cert;
+		EVP_PKEY_free(root_ca_pubkey);
 		return 0;
 	} else {
+		EVP_PKEY_free(root_ca_pubkey);
 		return -1;
 	}
 }
@@ -477,7 +506,7 @@ void *handle_socks_request(void *args) {
 										gettimeofday(&current_time, NULL); printf("[%.6f][%s] GENERATING TLS CERT... ", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 										tls_cert_and_pkey cert_and_pkey;
 										if(gen_tls_cert_and_pkey(&cert_and_pkey, CN_SAN, CN_SAN_len) < 0) {
-											printf("failed! signature could not be verified\n");
+											printf("failed! signature could not be verified, possible rootCA.key/rootCA.crt mismatch???\n");
 											SSL_CTX_free(tls_client_ctx);
 											close_connection(clientfd);
 											exit(-1);
@@ -732,9 +761,9 @@ void *handle_socks_request(void *args) {
 										}
 										struct pollfd fds[2]; // poll() struct array
 										fds[0].fd = destfd;
-										fds[0].events = POLLIN;
+										fds[0].events = POLLIN | POLLRDHUP;
 										fds[1].fd = clientfd;
-										fds[1].events = POLLIN;
+										fds[1].events = POLLIN | POLLRDHUP;
 										while(1) {
 											timeout_return = poll(fds, 2, 5000);
 											if(timeout_return > 0) {
@@ -859,7 +888,7 @@ void *handle_socks_request(void *args) {
 														}
 													}
 												}
-												else if(fds[0].revents & POLLHUP) {
+												else if(fds[0].revents & POLLHUP || fds[0].revents & POLLRDHUP) {
 													gettimeofday(&current_time, NULL); printf("[%.6f][%s] dest closed the connection : closing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 													if(close(destfd) < 0) {
 														exit(-1); // unknown close() error
@@ -997,7 +1026,7 @@ void *handle_socks_request(void *args) {
 														}
 													}
 												}
-												else if(fds[1].revents & POLLHUP) {
+												else if(fds[1].revents & POLLHUP || fds[1].revents & POLLRDHUP) {
 													gettimeofday(&current_time, NULL); printf("[%.6f][%s] client closed the connection : closing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 													if(close(clientfd) < 0) {
 														exit(-1); // unknown close() error
@@ -1086,7 +1115,7 @@ void *handle_socks_request(void *args) {
 										gettimeofday(&current_time, NULL); printf("[%.6f][%s] GENERATING TLS CERT... ", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 										tls_cert_and_pkey cert_and_pkey;
 										if(gen_tls_cert_and_pkey(&cert_and_pkey, CN_SAN, CN_SAN_len) < 0) {
-											printf("failed! signature could not be verified\n");
+											printf("failed! signature could not be verified, possible rootCA.key/rootCA.crt mismatch???\n");
 											SSL_CTX_free(tls_client_ctx);
 											close_connection(clientfd);
 											exit(-1);
@@ -1344,9 +1373,9 @@ void *handle_socks_request(void *args) {
 												}
 												struct pollfd fds[2]; // poll() struct array
 												fds[0].fd = destfd;
-												fds[0].events = POLLIN;
+												fds[0].events = POLLIN | POLLRDHUP;
 												fds[1].fd = clientfd;
-												fds[1].events = POLLIN;
+												fds[1].events = POLLIN | POLLRDHUP;
 												while(1) {
 													timeout_return = poll(fds, 2, 5000);
 													if(timeout_return > 0) {
@@ -1471,7 +1500,7 @@ void *handle_socks_request(void *args) {
 																}
 															}
 														}
-														else if(fds[0].revents & POLLHUP) {
+														else if(fds[0].revents & POLLHUP || fds[0].revents & POLLRDHUP) {
 															gettimeofday(&current_time, NULL); printf("[%.6f][%s] dest closed the connection : closing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 															if(close(destfd) < 0) {
 																exit(-1); // unknown close() error
@@ -1609,7 +1638,7 @@ void *handle_socks_request(void *args) {
 																}
 															}
 														}
-														else if(fds[1].revents & POLLHUP) {
+														else if(fds[1].revents & POLLHUP || fds[1].revents & POLLRDHUP) {
 															gettimeofday(&current_time, NULL); printf("[%.6f][%s] client closed the connection : closing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 															if(close(clientfd) < 0) {
 																exit(-1); // unknown close() error
@@ -1933,7 +1962,7 @@ int main(int argc, char *argv[]) {
 						close_connection(clientfd);
 						gettimeofday(&current_time, NULL); printf("[%.6f] error creating new thread : quitting\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
 						free(args);
-						exit(-1); // unknown pthread_create() error
+						return -1; // unknown pthread_create() error
 					}
 					pthread_detach(tid);
 				} else {
