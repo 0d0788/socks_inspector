@@ -17,6 +17,8 @@
 #include <unistd.h>
 #include <poll.h>
 #include <openssl/ssl.h>
+#include <openssl/x509.h>
+#include <openssl/x509v3.h>
 #include <ctype.h>
 #include <sys/types.h>
 #include <dirent.h>
@@ -225,7 +227,7 @@ typedef struct {
 	X509 *new_cert;
 } tls_cert_and_pkey;
 
-int gen_tls_cert_and_pkey(tls_cert_and_pkey *new, unsigned char *CN_SAN, size_t CN_SAN_len) { // helper to reduce code size
+int gen_tls_cert_and_pkey(tls_cert_and_pkey *new, unsigned char *CN, unsigned char *SAN) { // helper to reduce code size
 	FILE *root_cert_file = fopen("rootCA.crt", "r");
 	if(root_cert_file == NULL) {
 		printf("failed to open root cert file!\n");
@@ -260,17 +262,12 @@ int gen_tls_cert_and_pkey(tls_cert_and_pkey *new, unsigned char *CN_SAN, size_t 
 	EVP_PKEY *new_ppkey = EVP_RSA_gen(2048);
 	X509 *new_cert = X509_new();
 	X509_NAME *new_crt_name = X509_NAME_new();
-	X509_EXTENSION *extension_san = X509_EXTENSION_new();
-	ASN1_OCTET_STRING *subject_alt_name_ASN1 = ASN1_OCTET_STRING_new();
-	//X509_set_version(new_cert, X509_VERSION_3);
+	X509_EXTENSION *extension_san = NULL;
+	X509_set_version(new_cert, X509_VERSION_3);
 	ASN1_INTEGER_set(X509_get_serialNumber(new_cert), 1);
 	X509_gmtime_adj(X509_get_notBefore(new_cert), 0);
 	X509_gmtime_adj(X509_get_notAfter(new_cert), 31536000L);
-	if(X509_set_pubkey(new_cert, new_ppkey) != 1) {
-		printf("failed to add pubkey to cert!\n");
-		exit(-1);
-	}
-	if(X509_NAME_add_entry_by_txt(new_crt_name, "CN", MBSTRING_ASC, CN_SAN, CN_SAN_len, -1, 0) != 1) {
+	if(X509_NAME_add_entry_by_txt(new_crt_name, "CN", MBSTRING_ASC, CN, -1, -1, 0) != 1) {
 		printf("failed to add COMMON NAME to subject name field!\n");
 		exit(-1);
 	}
@@ -282,13 +279,16 @@ int gen_tls_cert_and_pkey(tls_cert_and_pkey *new, unsigned char *CN_SAN, size_t 
 		printf("failed to set issuer name field in cert!\n");
 		exit(-1);
 	}
-	ASN1_OCTET_STRING_set(subject_alt_name_ASN1, CN_SAN, CN_SAN_len);
-	if(X509_EXTENSION_create_by_NID(&extension_san, NID_subject_alt_name, 0, subject_alt_name_ASN1) == NULL) {
+	if((extension_san = X509V3_EXT_conf_nid(NULL, NULL, NID_subject_alt_name, SAN)) == NULL) {
 		printf("failed to create SAN!\n");
 		exit(-1);
 	}
 	if(X509_add_ext(new_cert, extension_san, -1) != 1) {
 		printf("failed to add SAN to cert!\n");
+		exit(-1);
+	}
+	if(X509_set_pubkey(new_cert, new_ppkey) != 1) {
+		printf("failed to add pubkey to cert!\n");
 		exit(-1);
 	}
 	EVP_MD *md = EVP_MD_fetch(NULL, "SHA2-256", "provider=default");
@@ -297,7 +297,6 @@ int gen_tls_cert_and_pkey(tls_cert_and_pkey *new, unsigned char *CN_SAN, size_t 
 		exit(-1);
 	}
 	EVP_MD_free(md);
-	ASN1_OCTET_STRING_free(subject_alt_name_ASN1);
 	X509_EXTENSION_free(extension_san);
 	X509_NAME_free(new_crt_name);
 	EVP_PKEY_free(root_ca_privkey);
@@ -321,8 +320,8 @@ typedef struct {
 	bool logging_enabled;
 	char *logpath;
 	bool tls_decrypt_enabled;
-	unsigned char *CN_SAN;
-	size_t CN_SAN_len;
+	unsigned char *CN;
+	unsigned char *SAN;
 	int clientfd;
 	struct sockaddr_in clientaddr;
 } socks_handler_args;
@@ -337,8 +336,8 @@ void *handle_socks_request(void *args) {
 	bool logging_enabled = func_args->logging_enabled;
 	char *logpath = func_args->logpath;
 	bool tls_decrypt_enabled = func_args->tls_decrypt_enabled;
-	unsigned char *CN_SAN = func_args->CN_SAN;
-	size_t CN_SAN_len = func_args->CN_SAN_len;
+	unsigned char *CN = func_args->CN;
+	unsigned char *SAN = func_args->SAN;
 	int clientfd = func_args->clientfd; // accepted incoming connection from listenfd
 	int destfd; // destination where packages are forwarded to (if enabled)
 	struct sockaddr_in clientaddr = func_args->clientaddr;
@@ -505,7 +504,7 @@ void *handle_socks_request(void *args) {
 										SSL_CTX_set_options(tls_client_ctx, opts);
 										gettimeofday(&current_time, NULL); printf("[%.6f][%s] GENERATING TLS CERT... ", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 										tls_cert_and_pkey cert_and_pkey;
-										if(gen_tls_cert_and_pkey(&cert_and_pkey, CN_SAN, CN_SAN_len) < 0) {
+										if(gen_tls_cert_and_pkey(&cert_and_pkey, CN, SAN) < 0) {
 											printf("failed! signature could not be verified, possible rootCA.key/rootCA.crt mismatch???\n");
 											SSL_CTX_free(tls_client_ctx);
 											close_connection(clientfd);
@@ -1114,7 +1113,7 @@ void *handle_socks_request(void *args) {
 										SSL_CTX_set_options(tls_client_ctx, opts);
 										gettimeofday(&current_time, NULL); printf("[%.6f][%s] GENERATING TLS CERT... ", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 										tls_cert_and_pkey cert_and_pkey;
-										if(gen_tls_cert_and_pkey(&cert_and_pkey, CN_SAN, CN_SAN_len) < 0) {
+										if(gen_tls_cert_and_pkey(&cert_and_pkey, CN, SAN) < 0) {
 											printf("failed! signature could not be verified, possible rootCA.key/rootCA.crt mismatch???\n");
 											SSL_CTX_free(tls_client_ctx);
 											close_connection(clientfd);
@@ -1843,7 +1842,7 @@ int main(int argc, char *argv[]) {
 				}
 				exit(-1); // unknown opendir() error
 			} else { // is usable
-				logpath = (char *) malloc(strlen(argv[argv_pos+1])+1); // +1 for null terminator byte
+				logpath = (char *) malloc(strlen(argv[argv_pos+1])+1);
 				strcpy(logpath, argv[argv_pos+1]);
 				logging = true;
 				gettimeofday(&current_time, NULL); printf("[%.6f] logging enabled : writing to %s\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), argv[argv_pos+1]);
@@ -1900,39 +1899,42 @@ int main(int argc, char *argv[]) {
 		gettimeofday(&current_time, NULL); printf("[%.6f] decrypting of TLS requests enabled\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
 		tls_decrypt = true;
 	}
-	argv_pos = check_argv(argc, argv, "--CN_SAN");
+	argv_pos = check_argv(argc, argv, "--CN");
 	if(argv_pos == -1) {
 		if(tls_decrypt == true) {
-			gettimeofday(&current_time, NULL); printf("[%.6f] no X509 CN/SAN specified : using default value\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
-			args->CN_SAN = "localhost";
-			args->CN_SAN_len = 9;
+			gettimeofday(&current_time, NULL); printf("[%.6f] no X509 COMMON NAME specified : using default value\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+			args->CN = "localhost";
 		}
 	} else {
 		if(argc < argv_pos+2) {
-			gettimeofday(&current_time, NULL); printf("[%.6f] no X509 CN/SAN after --CN_SAN argument : returning\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
-			exit(1);
-		}
-		if(argc < argv_pos+3) {
-			gettimeofday(&current_time, NULL); printf("[%.6f] no X509 CN/SAN size after --CN_SAN argument : returning\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+			gettimeofday(&current_time, NULL); printf("[%.6f] no X509 COMMON NAME after --CN argument : returning\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
 			exit(1);
 		}
 		if(tls_decrypt == true) {
-			args->CN_SAN = argv[argv_pos+1];
-			char *s = argv[argv_pos+2];
-			while (*s) { // check if that value is numeric and not something else
-				if (isdigit(*s) == 0) {
-					gettimeofday(&current_time, NULL); printf("[%.6f] X509 CN/SAN size specified after the --CN_SAN argument is not numeric : returning\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
-					exit(1);
-				} else {
-					s++;
-				}
-			}
-			args->CN_SAN_len = atoi(argv[argv_pos+2]);
-			gettimeofday(&current_time, NULL); printf("[%.6f] using X509 CN/SAN %s of size %u\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), args->CN_SAN, args->CN_SAN_len);
+			args->CN = argv[argv_pos+1];
+			gettimeofday(&current_time, NULL); printf("[%.6f] using X509 COMMON NAME %s\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), args->CN);
 		} else {
-			gettimeofday(&current_time, NULL); printf("[%.6f] ignoring --CN_SAN : only used when --tls-decrypt is set\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
-			args->CN_SAN = NULL;
-			args->CN_SAN_len = 0;
+			gettimeofday(&current_time, NULL); printf("[%.6f] ignoring --CN : only used when --tls-decrypt is set\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+			args->CN = NULL;
+		}
+	}
+	argv_pos = check_argv(argc, argv, "--SAN");
+	if(argv_pos == -1) {
+		if(tls_decrypt == true) {
+			gettimeofday(&current_time, NULL); printf("[%.6f] no X509 SAN specified : using default value\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+			args->SAN = "localhost";
+		}
+	} else {
+		if(argc < argv_pos+2) {
+			gettimeofday(&current_time, NULL); printf("[%.6f] no X509 SAN after --SAN argument : returning\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+			exit(1);
+		}
+		if(tls_decrypt == true) {
+			args->SAN = argv[argv_pos+1];
+			gettimeofday(&current_time, NULL); printf("[%.6f] using X509 SAN %s\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), args->SAN);
+		} else {
+			gettimeofday(&current_time, NULL); printf("[%.6f] ignoring --SAN : only used when --tls-decrypt is set\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+			args->SAN = NULL;
 		}
 	}
 
@@ -1959,8 +1961,8 @@ int main(int argc, char *argv[]) {
 					// create thread and handle client
 					pthread_t tid;
 					if(pthread_create(&tid, NULL, handle_socks_request, args) != 0) {
-						close_connection(clientfd);
 						gettimeofday(&current_time, NULL); printf("[%.6f] error creating new thread : quitting\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+						close_connection(clientfd);
 						free(args);
 						return -1; // unknown pthread_create() error
 					}
