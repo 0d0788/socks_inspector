@@ -20,10 +20,14 @@
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
 #include <ctype.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <dirent.h>
 #include <errno.h>
 #include <sys/time.h>
+
+#define BUFFERSIZE 65536	// size of the used buffers in bytes (max IPv4 package size)
+							// 65536 bytes is 64 Kibibyte, which is the max. IPv4 package size
 
 int open_socket(bool listening_socket, uint32_t addr, uint16_t port) {
 	// opens a socket and either binds a name or connects it based on the (bool) listen argument
@@ -79,7 +83,8 @@ int check_argv(int argc, char *argv[], char *search_word) { // dynamically check
 
 void hexdump(unsigned char *buffer, size_t bufferlen) {
 	int count;
-	for(int bufferlen_count = 0; bufferlen_count < bufferlen; bufferlen_count = bufferlen_count+16) {
+	int bufferlen_count;
+	for(bufferlen_count = 0; bufferlen_count < bufferlen; bufferlen_count = bufferlen_count+16) {
 		printf("%08X | ", bufferlen_count);
 		for(count = 0; count < 16 && (count+bufferlen_count) < bufferlen; count++) {
 			printf("%02X ", buffer[bufferlen_count+count]);
@@ -105,7 +110,70 @@ void hexdump(unsigned char *buffer, size_t bufferlen) {
 	printf("\n");
 }
 
-void editbuffer(unsigned char *buffer, size_t bufferlen) { // not memory safe the buffers can simply overflow
+void editbuffer_new(unsigned char *buffer, size_t bufferlen, char *randvalue) { // new edit function (using external text editor)
+	char selection;
+	while(1) {
+		printf("edit this package or skip? (y/n): "); scanf("%c", &selection);
+		getchar(); // consume newline to clear STDIN
+		if(selection == 'y' || selection == 'Y') { // selection is yes
+			char *editor = getenv("EDITOR"); // get the text editor set in EDITOR env variable
+			char path[strlen("/dev/shm/") + strlen(randvalue) + strlen(".tmp") + 1];
+			strcpy(path, "/dev/shm/");
+			strcat(path, randvalue);
+			strcat(path, ".tmp");
+			FILE *tmp = fopen(path, "w"); // open (create) the tmp file
+			for(int bufferlen_count = 0; bufferlen_count < bufferlen; bufferlen_count = bufferlen_count+16) {
+				for(int count = 0; count < 16 && (count+bufferlen_count) < bufferlen; count++) {
+					fprintf(tmp, "%02X ", buffer[bufferlen_count+count]);
+				}
+				/*
+				while(count < 16) {
+					fprintf(tmp, "%02X ", 0x00);
+					count++;
+				}
+				*/
+				fprintf(tmp, "\n");
+			}
+			fflush(tmp);
+			char cmd[strlen(editor) + strlen(path) + 2];
+			memset(cmd, 0, sizeof(cmd));
+			strcpy(cmd, editor);
+			strcat(cmd, " ");
+			strcat(cmd, path);
+			system(cmd);
+			struct stat st;
+			fstat(fileno(tmp), &st);
+			unsigned char tmpbuffer[st.st_size], *tmpbuffer_pos = tmpbuffer;
+			memset(tmpbuffer, 0, sizeof(tmpbuffer));
+			size_t tmplen = fread(tmpbuffer, 1, st.st_size, tmp);
+			fclose(tmp);
+			memset(buffer, 0, BUFFERSIZE);
+			int x = 0;
+			int y = 0;
+			while(y < tmplen && x < BUFFERSIZE) {
+				while(*tmpbuffer_pos == '\n' || *tmpbuffer_pos == ' ') {
+					tmpbuffer_pos++; // move past space or newline (dont copy them)
+					y++;
+				}
+				// copy the hex value into binary
+				if(sscanf(tmpbuffer_pos, "%02X", &buffer[x]) == 1) {
+					tmpbuffer_pos += 2; // move past the copied two digit hex value
+					y += 2;
+					x++; // move to next index in dst buffer
+				} else {
+					tmpbuffer_pos++; // Skip invalid chars
+					y++;
+				}
+			}
+			return;
+		}
+		else if(selection == 'n' || selection == 'N') { // selection is no
+			return;
+		}
+	}
+}
+
+void editbuffer(unsigned char *buffer, size_t bufferlen) { // not memory safe the buffers can simply overflow (deprecated, replaced by editbuffer_new)
 	char selection;
 	while(1) {
 		printf("change a single byte, byterange or skip (b/r/s): "); scanf("%c", &selection);
@@ -183,7 +251,7 @@ void editbuffer(unsigned char *buffer, size_t bufferlen) { // not memory safe th
 	}
 }
 
-void logpkg(char filename[], char logpath[], char *package, size_t package_len) { // logging helper to reduce code size
+void logpkg(char *filename, char *logpath, char *package, size_t package_len) { // logging helper to reduce code size
 	// log the package content in form of a .bin binary file to the path in the argument
 	// if the content is somehow encrypted you need to decrypt it yourself
 	// path is argv[argv_pos+1]
@@ -195,7 +263,7 @@ void logpkg(char filename[], char logpath[], char *package, size_t package_len) 
 	}
 	strcat(full_path, filename);
 	FILE *logfile = fopen(full_path, "w"); // open (create) the logfile
-	fwrite(package, package_len, 1, logfile); // write package to logfile
+	fwrite(package, 1, package_len, logfile); // write package to logfile
 	if(fclose(logfile) != 0) { // close the log file (every connection got its own)
 		exit(-1); // unknown fclose() error
 	}
@@ -227,7 +295,7 @@ typedef struct {
 	X509 *new_cert;
 } tls_cert_and_pkey;
 
-int gen_tls_cert_and_pkey(tls_cert_and_pkey *new, unsigned char *CN, unsigned char *SAN) { // helper to reduce code size
+int gen_tls_cert_and_pkey(tls_cert_and_pkey *new, unsigned char *CN, unsigned char *SAN) {
 	FILE *root_cert_file = fopen("rootCA.crt", "r");
 	if(root_cert_file == NULL) {
 		printf("failed to open root cert file!\n");
@@ -360,8 +428,8 @@ void *handle_socks_request(void *args) {
 	SSL *tls_dest; // TLS dest object
 	int ssl_rtrn; // the value returned by the openssl SSL_* functions
 	bool is_tls; // used to identify if a connected client is really using TLS
-	unsigned char package[65536]; // 64KiB buffer used for receiving packages into that buffer
-	memset(package, 0, sizeof(package)); // zero the package buffer
+	unsigned char package[BUFFERSIZE]; // 64KiB buffer used for receiving packages into that buffer
+	memset(package, 0, BUFFERSIZE); // zero the package buffer
 
 	// SOCKS5 data formats to parse packages
 	typedef struct {
@@ -424,7 +492,7 @@ void *handle_socks_request(void *args) {
 	timeout_return = timeout(clientfd, POLLIN, 5000); // wait 5 seconds for the SOCKS5 greeting from client
 	if(timeout_return & POLLIN) { // there is a package from a connected client
 		gettimeofday(&current_time, NULL); printf("[%.6f][%s] starting SOCKS5 handshake for %s:%u\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string, client_ip, ntohs(clientaddr.sin_port));
-		if(read(clientfd, package, sizeof(package)) < 0) {
+		if(read(clientfd, package, BUFFERSIZE) < 0) {
 			exit(-1); // unknown read() error
 		}
 		SOCKS5_greeting *package_greeting = malloc(sizeof(SOCKS5_greeting) + sizeof(uint8_t) * (*(package+1)));
@@ -464,8 +532,8 @@ void *handle_socks_request(void *args) {
 				}
 				timeout_return = timeout(clientfd, POLLIN, 5000); // wait max 5 seconds for an answer from the client (the request details)
 				if(timeout_return & POLLIN) { // request details came in from client
-					memset(package, 0, sizeof(package));
-					if((readbytes = read(clientfd, package, sizeof(package))) < 0) { // read the request details into buffer
+					memset(package, 0, BUFFERSIZE);
+					if((readbytes = read(clientfd, package, BUFFERSIZE)) < 0) { // read the request details into buffer
 						exit(-1); // unknown read() error
 					}
 					if(*(package+1) == 0x01) { // check if the command in the request details is CONNECT
@@ -505,7 +573,7 @@ void *handle_socks_request(void *args) {
 							}
 							timeout_return = timeout(clientfd, POLLIN, 5000); // wait 5 seconds for an answer (the actual package to echo and/or decrypt and/or forward)
 							if(timeout_return & POLLIN) { // the request came in
-								memset(package, 0, sizeof(package)); // zero out buffer to avoid garbage data
+								memset(package, 0, BUFFERSIZE); // zero out buffer to avoid garbage data
 								if(tls_decrypt_enabled == true) { // check if decryption is enabled
 									if(recv(clientfd, package, 3, MSG_PEEK) < 0) { // peek at the first 3 bytes to check if its indeed a TLS client hello
 										exit(-1); // unknown recv() error (too lazy to write further errno handling lol)
@@ -570,8 +638,8 @@ void *handle_socks_request(void *args) {
 										gettimeofday(&current_time, NULL); printf("[%.6f][%s] waiting for the actual request to decrypt...", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 										timeout_return = timeout(clientfd, POLLIN, 5000);
 										if(timeout_return & POLLIN) {
-											memset(package, 0, sizeof(package)); // zero out buffer to avoid garbage data
-											while((ssl_rtrn = SSL_read_ex(tls_client, package, sizeof(package), &readbytes)) != 1) {
+											memset(package, 0, BUFFERSIZE); // zero out buffer to avoid garbage data
+											while((ssl_rtrn = SSL_read_ex(tls_client, package, BUFFERSIZE, &readbytes)) != 1) {
 												switch(SSL_get_error(tls_client, ssl_rtrn)) {
 													case SSL_ERROR_WANT_READ:
 														usleep(1000);
@@ -607,13 +675,13 @@ void *handle_socks_request(void *args) {
 										}
 									} else { // is not a TLS client hello, just read()
 										is_tls = false;
-										memset(package, 0, sizeof(package)); // zero out buffer to avoid garbage data
-										if((readbytes = read(clientfd, package, sizeof(package))) < 0) {
+										memset(package, 0, BUFFERSIZE); // zero out buffer to avoid garbage data
+										if((readbytes = read(clientfd, package, BUFFERSIZE)) < 0) {
 											exit(-1); // unknown read() error (too lazy to write further errno handling lol)
 										}
 									}
 								} else { // no TLS decryption enabled just read()
-									if((readbytes = read(clientfd, package, sizeof(package))) < 0) {
+									if((readbytes = read(clientfd, package, BUFFERSIZE)) < 0) {
 										exit(-1); // unknown read() error (too lazy to write further errno handling lol)
 									}
 								}
@@ -623,7 +691,8 @@ void *handle_socks_request(void *args) {
 								}
 								if(editing_enabled == true) {
 									gettimeofday(&current_time, NULL); printf("[%.6f][%s] entering hexedit mode...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-									editbuffer(package, readbytes);
+									//editbuffer(package, readbytes);
+									editbuffer_new(package, readbytes, random_string);
 									if(hexdump_enabled == true) {
 										gettimeofday(&current_time, NULL); printf("[%.6f][%s] EDITED REQUEST PACKAGE CONTENT (hexdump) :\n\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 										hexdump(package, readbytes);
@@ -732,6 +801,7 @@ void *handle_socks_request(void *args) {
 												}
 												else if(*(handshake_buffer+1) != 0x00) {
 													gettimeofday(&current_time, NULL); printf("\n[%.6f][%s] socks5 handshake failed : NO AUTH method not supported\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
+													//free(request_details_domain);
 													if(tls_decrypt_enabled == true && is_tls == true) {
 														SSL_free(tls_client);
 														SSL_CTX_free(tls_client_ctx);
@@ -934,9 +1004,9 @@ void *handle_socks_request(void *args) {
 											timeout_return = poll(fds, 2, 5000);
 											if(timeout_return > 0) {
 												if(fds[0].revents & POLLIN) {
-													memset(package, 0, sizeof(package)); // zero out package buffer to avoid garbage data
+													memset(package, 0, BUFFERSIZE); // zero out package buffer to avoid garbage data
 													if(tls_decrypt_enabled == true && is_tls == true) {
-														while((ssl_rtrn = SSL_read_ex(tls_dest, package, sizeof(package), &readbytes)) != 1) {
+														while((ssl_rtrn = SSL_read_ex(tls_dest, package, BUFFERSIZE, &readbytes)) != 1) {
 															switch(SSL_get_error(tls_dest, ssl_rtrn)) {
 																case SSL_ERROR_WANT_READ:
 																	usleep(1000);
@@ -961,7 +1031,7 @@ void *handle_socks_request(void *args) {
 															}
 														}
 													} else {
-														readbytes = read(destfd, package, sizeof(package)); // try to read() a answer from dest
+														readbytes = read(destfd, package, BUFFERSIZE); // try to read() a answer from dest
 														if(readbytes == 0) {
 															gettimeofday(&current_time, NULL); printf("[%.6f][%s] dest closed the connection : closing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 															if(close(destfd) < 0) {
@@ -1063,9 +1133,9 @@ void *handle_socks_request(void *args) {
 													return NULL;
 												}
 												if(fds[1].revents & POLLIN) {
-													memset(package, 0, sizeof(package)); // zero out package buffer to avoid garbage data
+													memset(package, 0, BUFFERSIZE); // zero out package buffer to avoid garbage data
 													if(tls_decrypt_enabled == true && is_tls == true) {
-														while((ssl_rtrn = SSL_read_ex(tls_client, package, sizeof(package), &readbytes)) != 1) {
+														while((ssl_rtrn = SSL_read_ex(tls_client, package, BUFFERSIZE, &readbytes)) != 1) {
 															switch(SSL_get_error(tls_client, ssl_rtrn)) {
 																case SSL_ERROR_WANT_READ:
 																	usleep(1000);
@@ -1090,7 +1160,7 @@ void *handle_socks_request(void *args) {
 															}
 														}
 													} else {
-														readbytes = read(clientfd, package, sizeof(package)); // try to read() a new request from client
+														readbytes = read(clientfd, package, BUFFERSIZE); // try to read() a new request from client
 														if(readbytes == 0) {
 															gettimeofday(&current_time, NULL); printf("[%.6f][%s] client closed the connection : closing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 															if(close(clientfd) < 0) {
@@ -1284,7 +1354,7 @@ void *handle_socks_request(void *args) {
 							}
 							timeout_return = timeout(clientfd, POLLIN, 5000); // wait 5 seconds for an answer (the actual package to echo and/or decrypt and/or forward)
 							if(timeout_return & POLLIN) { // the answer came in
-								memset(package, 0, sizeof(package));
+								memset(package, 0, BUFFERSIZE);
 								if(tls_decrypt_enabled == true) { // check if decryption is enabled
 									if(recv(clientfd, package, 3, MSG_PEEK) < 0) { // peek at the first 3 bytes to check if its indeed a TLS client hello
 										exit(-1); // unknown recv() error (too lazy to write further errno handling lol)
@@ -1350,8 +1420,8 @@ void *handle_socks_request(void *args) {
 										gettimeofday(&current_time, NULL); printf("[%.6f][%s] waiting for the actual request to decrypt...", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 										timeout_return = timeout(clientfd, POLLIN, 5000);
 										if(timeout_return & POLLIN) {
-											memset(package, 0, sizeof(package)); // zero out buffer to avoid garbage data
-											while((ssl_rtrn = SSL_read_ex(tls_client, package, sizeof(package), &readbytes)) != 1) {
+											memset(package, 0, BUFFERSIZE); // zero out buffer to avoid garbage data
+											while((ssl_rtrn = SSL_read_ex(tls_client, package, BUFFERSIZE, &readbytes)) != 1) {
 												switch(SSL_get_error(tls_client, ssl_rtrn)) {
 													case SSL_ERROR_WANT_READ:
 														usleep(1000);
@@ -1389,13 +1459,13 @@ void *handle_socks_request(void *args) {
 										}
 									} else { // is not a TLS client hello, just read()
 										is_tls = false;
-										memset(package, 0, sizeof(package)); // zero out buffer to avoid garbage data
-										if((readbytes = read(clientfd, package, sizeof(package))) < 0) {
+										memset(package, 0, BUFFERSIZE); // zero out buffer to avoid garbage data
+										if((readbytes = read(clientfd, package, BUFFERSIZE)) < 0) {
 											exit(-1); // unknown read() error (too lazy to write further errno handling lol)
 										}
 									}
 								} else { // no TLS decryption enabled just read()
-									if((readbytes = read(clientfd, package, sizeof(package))) < 0) {
+									if((readbytes = read(clientfd, package, BUFFERSIZE)) < 0) {
 										exit(-1); // unknown read() error (too lazy to write further errno handling lol)
 									}
 								}
@@ -1405,7 +1475,8 @@ void *handle_socks_request(void *args) {
 								}
 								if(editing_enabled == true) {
 									gettimeofday(&current_time, NULL); printf("[%.6f][%s] entering hexedit mode...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-									editbuffer(package, readbytes);
+									//editbuffer(package, readbytes);
+									editbuffer_new(package, readbytes, random_string);
 									if(hexdump_enabled == true) {
 										gettimeofday(&current_time, NULL); printf("[%.6f][%s] EDITED REQUEST PACKAGE CONTENT (hexdump) :\n\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 										hexdump(package, readbytes);
@@ -1752,9 +1823,9 @@ void *handle_socks_request(void *args) {
 											timeout_return = poll(fds, 2, 5000);
 											if(timeout_return > 0) {
 												if(fds[0].revents & POLLIN) {
-													memset(package, 0, sizeof(package)); // zero out package buffer to avoid garbage data
+													memset(package, 0, BUFFERSIZE); // zero out package buffer to avoid garbage data
 													if(tls_decrypt_enabled == true && is_tls == true) {
-														while((ssl_rtrn = SSL_read_ex(tls_dest, package, sizeof(package), &readbytes)) != 1) {
+														while((ssl_rtrn = SSL_read_ex(tls_dest, package, BUFFERSIZE, &readbytes)) != 1) {
 															switch(SSL_get_error(tls_dest, ssl_rtrn)) {
 																case SSL_ERROR_WANT_READ:
 																	usleep(1000);
@@ -1780,7 +1851,7 @@ void *handle_socks_request(void *args) {
 															}
 														}
 													} else {
-														readbytes = read(destfd, package, sizeof(package)); // try to read() a answer from dest
+														readbytes = read(destfd, package, BUFFERSIZE); // try to read() a answer from dest
 														if(readbytes == 0) {
 															gettimeofday(&current_time, NULL); printf("[%.6f][%s] dest closed the connection : closing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 															//free(request_details_domain);
@@ -1886,9 +1957,9 @@ void *handle_socks_request(void *args) {
 													return NULL;
 												}
 												if(fds[1].revents & POLLIN) {
-													memset(package, 0, sizeof(package)); // zero out package buffer to avoid garbage data
+													memset(package, 0, BUFFERSIZE); // zero out package buffer to avoid garbage data
 													if(tls_decrypt_enabled == true && is_tls == true) {
-														while((ssl_rtrn = SSL_read_ex(tls_client, package, sizeof(package), &readbytes)) != 1) {
+														while((ssl_rtrn = SSL_read_ex(tls_client, package, BUFFERSIZE, &readbytes)) != 1) {
 															switch(SSL_get_error(tls_client, ssl_rtrn)) {
 																case SSL_ERROR_WANT_READ:
 																	usleep(1000);
@@ -1914,7 +1985,7 @@ void *handle_socks_request(void *args) {
 															}
 														}
 													} else {
-														readbytes = read(clientfd, package, sizeof(package)); // try to read() a new request from client
+														readbytes = read(clientfd, package, BUFFERSIZE); // try to read() a new request from client
 														if(readbytes == 0) {
 															gettimeofday(&current_time, NULL); printf("[%.6f][%s] client closed the connection : closing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 															//free(request_details_domain);
