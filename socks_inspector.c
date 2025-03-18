@@ -110,7 +110,7 @@ void hexdump(unsigned char *buffer, size_t bufferlen) {
 	printf("\n");
 }
 
-void editbuffer_new(unsigned char *buffer, size_t bufferlen, char *randvalue) { // new edit function (using external text editor)
+size_t editbuffer_new(unsigned char *buffer, size_t bufferlen, char *randvalue) { // new edit function (using external text editor)
 	char selection;
 	while(1) {
 		printf("edit this package or skip? (y/n): "); scanf("%c", &selection);
@@ -124,14 +124,11 @@ void editbuffer_new(unsigned char *buffer, size_t bufferlen, char *randvalue) { 
 			FILE *tmp = fopen(path, "w"); // open (create) the tmp file
 			for(int bufferlen_count = 0; bufferlen_count < bufferlen; bufferlen_count = bufferlen_count+16) {
 				for(int count = 0; count < 16 && (count+bufferlen_count) < bufferlen; count++) {
-					fprintf(tmp, "%02X ", buffer[bufferlen_count+count]);
+					fprintf(tmp, "%02X", buffer[bufferlen_count+count]);
+					if(count < 15 && (count+bufferlen_count) < bufferlen) {
+						fprintf(tmp, " ");
+					}
 				}
-				/*
-				while(count < 16) {
-					fprintf(tmp, "%02X ", 0x00);
-					count++;
-				}
-				*/
 				fprintf(tmp, "\n");
 			}
 			fflush(tmp);
@@ -156,7 +153,7 @@ void editbuffer_new(unsigned char *buffer, size_t bufferlen, char *randvalue) { 
 					y++;
 				}
 				// copy the hex value into binary
-				if(sscanf(tmpbuffer_pos, "%02X", &buffer[x]) == 1) {
+				if(sscanf(tmpbuffer_pos, "%02X", (buffer+x)) == 1) {
 					tmpbuffer_pos += 2; // move past the copied two digit hex value
 					y += 2;
 					x++; // move to next index in dst buffer
@@ -165,10 +162,10 @@ void editbuffer_new(unsigned char *buffer, size_t bufferlen, char *randvalue) { 
 					y++;
 				}
 			}
-			return;
+			return (x+1); // return the new len of the buffer (+1 because len starting from index 1 (size in bytes) and not 0)
 		}
 		else if(selection == 'n' || selection == 'N') { // selection is no
-			return;
+			return 0;
 		}
 	}
 }
@@ -692,7 +689,8 @@ void *handle_socks_request(void *args) {
 								if(editing_enabled == true) {
 									gettimeofday(&current_time, NULL); printf("[%.6f][%s] entering hexedit mode...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 									//editbuffer(package, readbytes);
-									editbuffer_new(package, readbytes, random_string);
+									int newlen = editbuffer_new(package, readbytes, random_string);
+									if (newlen > 0 && newlen != readbytes) { readbytes = newlen; } // update package len
 									if(hexdump_enabled == true) {
 										gettimeofday(&current_time, NULL); printf("[%.6f][%s] EDITED REQUEST PACKAGE CONTENT (hexdump) :\n\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 										hexdump(package, readbytes);
@@ -1476,7 +1474,8 @@ void *handle_socks_request(void *args) {
 								if(editing_enabled == true) {
 									gettimeofday(&current_time, NULL); printf("[%.6f][%s] entering hexedit mode...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 									//editbuffer(package, readbytes);
-									editbuffer_new(package, readbytes, random_string);
+									int newlen = editbuffer_new(package, readbytes, random_string);
+									if (newlen > 0 && newlen != readbytes) { readbytes = newlen; } // update package len
 									if(hexdump_enabled == true) {
 										gettimeofday(&current_time, NULL); printf("[%.6f][%s] EDITED REQUEST PACKAGE CONTENT (hexdump) :\n\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 										hexdump(package, readbytes);
