@@ -121,23 +121,26 @@ size_t editbuffer_new(unsigned char *buffer, size_t bufferlen, char *randvalue) 
 			strcpy(path, "/dev/shm/");
 			strcat(path, randvalue);
 			strcat(path, ".tmp");
-			FILE *tmp = fopen(path, "w"); // open (create) the tmp file
+			FILE *tmp;
+			tmp = fopen(path, "w"); // open (create) the tmp file
 			for(int bufferlen_count = 0; bufferlen_count < bufferlen; bufferlen_count = bufferlen_count+16) {
 				for(int count = 0; count < 16 && (count+bufferlen_count) < bufferlen; count++) {
 					fprintf(tmp, "%02X", buffer[bufferlen_count+count]);
-					if(count < 15 && (count+bufferlen_count) < bufferlen) {
+					if(count < 15 && (count+bufferlen_count) < (bufferlen-1)) {
 						fprintf(tmp, " ");
 					}
 				}
 				fprintf(tmp, "\n");
 			}
 			fflush(tmp);
+			fclose(tmp);
 			char cmd[strlen(editor) + strlen(path) + 2];
 			memset(cmd, 0, sizeof(cmd));
 			strcpy(cmd, editor);
 			strcat(cmd, " ");
 			strcat(cmd, path);
 			system(cmd);
+			tmp = fopen(path, "r"); // reopen the file
 			struct stat st;
 			fstat(fileno(tmp), &st);
 			unsigned char tmpbuffer[st.st_size], *tmpbuffer_pos = tmpbuffer;
