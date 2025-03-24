@@ -155,7 +155,7 @@ size_t editbuffer_new(unsigned char *buffer, size_t bufferlen, char *randvalue) 
 					tmpbuffer_pos++; // move past space or newline (dont copy them)
 					y++;
 				}
-				// copy the hex value into binary
+				// convert the hex string into binary
 				if(sscanf(tmpbuffer_pos, "%02X", (buffer+x)) == 1) {
 					tmpbuffer_pos += 2; // move past the copied two digit hex value
 					y += 2;
@@ -802,7 +802,6 @@ void *handle_socks_request(void *args) {
 												}
 												else if(*(handshake_buffer+1) != 0x00) {
 													gettimeofday(&current_time, NULL); printf("\n[%.6f][%s] socks5 handshake failed : NO AUTH method not supported\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-													//free(request_details_domain);
 													if(tls_decrypt_enabled == true && is_tls == true) {
 														SSL_free(tls_client);
 														SSL_CTX_free(tls_client_ctx);
@@ -1344,10 +1343,10 @@ void *handle_socks_request(void *args) {
 							if(send(clientfd, &request_reply, sizeof(request_reply), MSG_NOSIGNAL) < 0) { // send reply (0x00 for connection succeded)
 								if(errno == ENOTCONN || errno == EPIPE || errno == ECONNRESET) {
 									gettimeofday(&current_time, NULL); printf("[%.6f][%s] client closed the connection : continuing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-									//free(request_details_domain);
 									if(close(clientfd) < 0) {
 										exit(-1);
 									}
+									free(request_details_domain);
 									return NULL;
 								} else {
 									exit(-1); // unknown write() error
@@ -1408,11 +1407,11 @@ void *handle_socks_request(void *args) {
 													continue;
 												default:
 													printf("failed!\n");
-													//free(request_details_domain);
 													SSL_free(tls_client);
 													SSL_CTX_free(tls_client_ctx);
 													gettimeofday(&current_time, NULL); printf("[%.6f][%s] CLOSING CONNECTION TO CLIENT...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 													close_connection(clientfd);
+													free(request_details_domain);
 													return NULL;
 											}
 										}
@@ -1432,12 +1431,12 @@ void *handle_socks_request(void *args) {
 														continue;
 													case SSL_ERROR_ZERO_RETURN:
 														gettimeofday(&current_time, NULL); printf("\n[%.6f][%s] client closed the connection : closing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-														//free(request_details_domain);
 														SSL_free(tls_client);
 														SSL_CTX_free(tls_client_ctx);
 														if(close(clientfd) < 0) {
 															exit(-1);
 														}
+														free(request_details_domain);
 														return NULL;
 													default:
 														printf("error!\n");
@@ -1448,11 +1447,11 @@ void *handle_socks_request(void *args) {
 										}
 										else if(timeout_return == 0) {
 											gettimeofday(&current_time, NULL); printf("\n[%.6f][%s] no request to decrypt : timeout\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-											//free(request_details_domain);
 											SSL_free(tls_client);
 											SSL_CTX_free(tls_client_ctx);
 											gettimeofday(&current_time, NULL); printf("[%.6f][%s] CLOSING CONNECTION TO CLIENT...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 											close_connection(clientfd);
+											free(request_details_domain);
 											return NULL;
 										}
 										else if(timeout_return < 0) {
@@ -1517,7 +1516,7 @@ void *handle_socks_request(void *args) {
 										destfd = open_socket((bool) false, proxy_addr, proxy_port); // create destination socket and connect it to the proxy
 									} else {
 										struct addrinfo *dst_info;
-										int getaddrinfo_rtrn = getaddrinfo(request_details_domain->domain_and_port, NULL, NULL, &dst_info);
+										int getaddrinfo_rtrn = getaddrinfo(dst_domain, NULL, NULL, &dst_info);
 										if(getaddrinfo_rtrn != 0) {
 											if(getaddrinfo_rtrn == EAI_NONAME) {
 												gettimeofday(&current_time, NULL); printf("[%.6f][%s] the DOMAIN ", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
@@ -1532,7 +1531,7 @@ void *handle_socks_request(void *args) {
 												gettimeofday(&current_time, NULL); printf("[%.6f][%s] CLOSING CONNECTION TO CLIENT...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 												close_connection(clientfd);
 												freeaddrinfo(dst_info);
-												//free(request_details_domain);
+												free(request_details_domain);
 												return NULL;
 											} else {
 												exit(-1); // unknown getaddrinfo() error
@@ -1565,7 +1564,7 @@ void *handle_socks_request(void *args) {
 												gettimeofday(&current_time, NULL); printf("[%.6f][%s] CLOSING CONNECTION TO CLIENT...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 												close_connection(clientfd);
 												freeaddrinfo(dst_info);
-												//free(request_details_domain);
+												free(request_details_domain);
 												return NULL;
 											}
 										}
@@ -1586,8 +1585,6 @@ void *handle_socks_request(void *args) {
 											if(send(destfd, proxy_greeting, (sizeof(SOCKS5_greeting) + sizeof(uint8_t)), MSG_NOSIGNAL) < 0) { // send socks5 client hello to proxy
 												if(errno == ENOTCONN || errno == EPIPE || errno == ECONNRESET) {
 													gettimeofday(&current_time, NULL); printf("\n[%.6f][%s] proxy closed the connection : closing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-													//free(request_details_domain);
-													free(proxy_greeting);
 													if(tls_decrypt_enabled == true && is_tls == true) {
 														SSL_free(tls_client);
 														SSL_CTX_free(tls_client_ctx);
@@ -1597,6 +1594,8 @@ void *handle_socks_request(void *args) {
 													}
 													gettimeofday(&current_time, NULL); printf("[%.6f][%s] CLOSING CONNECTION TO CLIENT...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 													close_connection(clientfd);
+													free(proxy_greeting);
+													free(request_details_domain);
 													return NULL;
 												} else {
 													printf("error!\n");
@@ -1611,7 +1610,6 @@ void *handle_socks_request(void *args) {
 												int read_rtrn = read(destfd, handshake_buffer, sizeof(handshake_buffer)); // try to read() a answer from proxy
 												if(read_rtrn == 0) {
 													gettimeofday(&current_time, NULL); printf("\n[%.6f][%s] proxy closed the connection : closing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-													//free(request_details_domain);
 													if(tls_decrypt_enabled == true && is_tls == true) {
 														SSL_free(tls_client);
 														SSL_CTX_free(tls_client_ctx);
@@ -1621,6 +1619,7 @@ void *handle_socks_request(void *args) {
 													}
 													gettimeofday(&current_time, NULL); printf("[%.6f][%s] CLOSING CONNECTION TO CLIENT...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 													close_connection(clientfd);
+													free(request_details_domain);
 													return NULL;
 												}
 												else if(read_rtrn < 0) {
@@ -1628,7 +1627,6 @@ void *handle_socks_request(void *args) {
 												}
 												if(*handshake_buffer != 0x05) {
 													gettimeofday(&current_time, NULL); printf("\n[%.6f][%s] socks5 handshake failed : wrong version\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-													//free(request_details_domain);
 													if(tls_decrypt_enabled == true && is_tls == true) {
 														SSL_free(tls_client);
 														SSL_CTX_free(tls_client_ctx);
@@ -1637,11 +1635,11 @@ void *handle_socks_request(void *args) {
 													close_connection(destfd);
 													gettimeofday(&current_time, NULL); printf("[%.6f][%s] CLOSING CONNECTION TO CLIENT...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 													close_connection(clientfd);
+													free(request_details_domain);
 													return NULL;
 												}
 												else if(*(handshake_buffer+1) != 0x00) {
 													gettimeofday(&current_time, NULL); printf("\n[%.6f][%s] socks5 handshake failed : NO AUTH method not supported\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-													//free(request_details_domain);
 													if(tls_decrypt_enabled == true && is_tls == true) {
 														SSL_free(tls_client);
 														SSL_CTX_free(tls_client_ctx);
@@ -1650,12 +1648,12 @@ void *handle_socks_request(void *args) {
 													close_connection(destfd);
 													gettimeofday(&current_time, NULL); printf("[%.6f][%s] CLOSING CONNECTION TO CLIENT...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 													close_connection(clientfd);
+													free(request_details_domain);
 													return NULL;
 												}
 												if(send(destfd, request_details_domain, (sizeof(SOCKS5_request_details_domain)+request_details_domain->domain_lenght+2), MSG_NOSIGNAL) < 0) { // send socks5 request details to proxy
 													if(errno == ENOTCONN || errno == EPIPE || errno == ECONNRESET) {
 														gettimeofday(&current_time, NULL); printf("\n[%.6f][%s] proxy closed the connection : closing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-														//free(request_details_domain);
 														if(tls_decrypt_enabled == true && is_tls == true) {
 															SSL_free(tls_client);
 															SSL_CTX_free(tls_client_ctx);
@@ -1665,20 +1663,20 @@ void *handle_socks_request(void *args) {
 														}
 														gettimeofday(&current_time, NULL); printf("[%.6f][%s] CLOSING CONNECTION TO CLIENT...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 														close_connection(clientfd);
+														free(request_details_domain);
 														return NULL;
 													} else {
 														printf("error!\n");
 														exit(-1); // unknown send() error
 													}
 												}
-												//free(request_details_domain);
+												free(request_details_domain);
 												timeout_return = timeout(destfd, POLLIN, 5000); // wait for socks5 request reply from the proxy
 												if(timeout_return & POLLIN) { // answer came in
 													memset(handshake_buffer, 0, sizeof(handshake_buffer));
 													read_rtrn = read(destfd, handshake_buffer, sizeof(handshake_buffer)); // try to read() a answer from proxy
 													if(read_rtrn == 0) {
 														gettimeofday(&current_time, NULL); printf("\n[%.6f][%s] proxy closed the connection : closing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-														//free(request_details_domain);
 														if(tls_decrypt_enabled == true && is_tls == true) {
 															SSL_free(tls_client);
 															SSL_CTX_free(tls_client_ctx);
@@ -1695,7 +1693,6 @@ void *handle_socks_request(void *args) {
 													}
 													if(*(handshake_buffer+1) != 0x00) {
 														gettimeofday(&current_time, NULL); printf("\n[%.6f][%s] socks5 handshake failed : proxy denied request\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-														//free(request_details_domain);
 														if(tls_decrypt_enabled == true && is_tls == true) {
 															SSL_free(tls_client);
 															SSL_CTX_free(tls_client_ctx);
@@ -1710,7 +1707,6 @@ void *handle_socks_request(void *args) {
 												}
 												else if(timeout_return == 0) { // timeout
 													gettimeofday(&current_time, NULL); printf("\n[%.6f][%s] socks5 handshake failed : timeout\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-													//free(request_details_domain);
 													if(tls_decrypt_enabled == true && is_tls == true) {
 														SSL_free(tls_client);
 														SSL_CTX_free(tls_client_ctx);
@@ -1724,7 +1720,6 @@ void *handle_socks_request(void *args) {
 											}
 											else if(timeout_return == 0) { // timeout
 												gettimeofday(&current_time, NULL); printf("\n[%.6f][%s] socks5 handshake failed : timeout\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-												//free(request_details_domain);
 												if(tls_decrypt_enabled == true && is_tls == true) {
 													SSL_free(tls_client);
 													SSL_CTX_free(tls_client_ctx);
@@ -1733,6 +1728,7 @@ void *handle_socks_request(void *args) {
 												close_connection(destfd);
 												gettimeofday(&current_time, NULL); printf("[%.6f][%s] CLOSING CONNECTION TO CLIENT...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 												close_connection(clientfd);
+												free(request_details_domain);
 												return NULL;
 											}
 										}
@@ -1754,7 +1750,6 @@ void *handle_socks_request(void *args) {
 														continue;
 													default:
 														printf("failed!\n");
-														//free(request_details_domain);
 														SSL_free(tls_dest);
 														SSL_CTX_free(tls_dest_ctx);
 														SSL_free(tls_client);
@@ -1779,7 +1774,6 @@ void *handle_socks_request(void *args) {
 														continue;
 													case SSL_ERROR_ZERO_RETURN:
 														gettimeofday(&current_time, NULL); printf("\n[%.6f][%s] dest closed the connection : closing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-														//free(request_details_domain);
 														SSL_free(tls_dest);
 														SSL_CTX_free(tls_dest_ctx);
 														SSL_free(tls_client);
@@ -1801,7 +1795,6 @@ void *handle_socks_request(void *args) {
 											if(send(destfd, package, readbytes, MSG_NOSIGNAL) < 0) { // forward the request
 												if(errno == ENOTCONN || errno == EPIPE || errno == ECONNRESET) {
 													gettimeofday(&current_time, NULL); printf("\n[%.6f][%s] dest closed the connection : closing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-													//free(request_details_domain);
 													if(close(destfd) < 0) {
 														exit(-1);
 													}
@@ -1837,7 +1830,6 @@ void *handle_socks_request(void *args) {
 																	continue;
 																case SSL_ERROR_ZERO_RETURN:
 																	gettimeofday(&current_time, NULL); printf("[%.6f][%s] dest closed the connection : closing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-																	//free(request_details_domain);
 																	SSL_free(tls_dest);
 																	SSL_CTX_free(tls_dest_ctx);
 																	SSL_free(tls_client);
@@ -1856,7 +1848,6 @@ void *handle_socks_request(void *args) {
 														readbytes = read(destfd, package, BUFFERSIZE); // try to read() a answer from dest
 														if(readbytes == 0) {
 															gettimeofday(&current_time, NULL); printf("[%.6f][%s] dest closed the connection : closing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-															//free(request_details_domain);
 															if(close(destfd) < 0) {
 																exit(-1); // unknown close() error
 															}
@@ -1911,7 +1902,6 @@ void *handle_socks_request(void *args) {
 																	continue;
 																case SSL_ERROR_ZERO_RETURN:
 																	gettimeofday(&current_time, NULL); printf("\n[%.6f][%s] client closed the connection : closing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-																	//free(request_details_domain);
 																	SSL_free(tls_dest);
 																	SSL_CTX_free(tls_dest_ctx);
 																	SSL_free(tls_client);
@@ -1932,7 +1922,6 @@ void *handle_socks_request(void *args) {
 														if(send(clientfd, package, readbytes, MSG_NOSIGNAL) < 0) { // forward the answer to the client
 															if(errno == ENOTCONN || errno == EPIPE || errno == ECONNRESET) {
 																gettimeofday(&current_time, NULL); printf("\n[%.6f][%s] client closed the connection : continuing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-																//free(request_details_domain);
 																if(close(clientfd) < 0) {
 																	exit(-1);
 																}
@@ -1950,7 +1939,6 @@ void *handle_socks_request(void *args) {
 												}
 												else if(fds[0].revents & POLLHUP || fds[0].revents & POLLRDHUP) {
 													gettimeofday(&current_time, NULL); printf("[%.6f][%s] dest closed the connection : closing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-													//free(request_details_domain);
 													if(close(destfd) < 0) {
 														exit(-1); // unknown close() error
 													}
@@ -1971,7 +1959,6 @@ void *handle_socks_request(void *args) {
 																	continue;
 																case SSL_ERROR_ZERO_RETURN:
 																	gettimeofday(&current_time, NULL); printf("[%.6f][%s] client closed the connection : closing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-																	//free(request_details_domain);
 																	SSL_free(tls_dest);
 																	SSL_CTX_free(tls_dest_ctx);
 																	SSL_free(tls_client);
@@ -1990,7 +1977,6 @@ void *handle_socks_request(void *args) {
 														readbytes = read(clientfd, package, BUFFERSIZE); // try to read() a new request from client
 														if(readbytes == 0) {
 															gettimeofday(&current_time, NULL); printf("[%.6f][%s] client closed the connection : closing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-															//free(request_details_domain);
 															if(close(clientfd) < 0) {
 																exit(-1); // unknown close() error
 															}
@@ -2053,7 +2039,6 @@ void *handle_socks_request(void *args) {
 																	continue;
 																case SSL_ERROR_ZERO_RETURN:
 																	gettimeofday(&current_time, NULL); printf("\n[%.6f][%s] dest closed the connection : closing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-																	//free(request_details_domain);
 																	SSL_free(tls_dest);
 																	SSL_CTX_free(tls_dest_ctx);
 																	SSL_free(tls_client);
@@ -2074,7 +2059,6 @@ void *handle_socks_request(void *args) {
 														if(send(destfd, package, readbytes, MSG_NOSIGNAL) < 0) { // forward the request
 															if(errno == ENOTCONN || errno == EPIPE || errno == ECONNRESET) {
 																gettimeofday(&current_time, NULL); printf("\n[%.6f][%s] dest closed the connection : continuing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-																//free(request_details_domain);
 																if(close(destfd) < 0) {
 																	exit(-1);
 																}
@@ -2092,7 +2076,6 @@ void *handle_socks_request(void *args) {
 												}
 												else if(fds[1].revents & POLLHUP || fds[1].revents & POLLRDHUP) {
 													gettimeofday(&current_time, NULL); printf("[%.6f][%s] client closed the connection : closing\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-													//free(request_details_domain);
 													if(close(clientfd) < 0) {
 														exit(-1); // unknown close() error
 													}
@@ -2103,7 +2086,6 @@ void *handle_socks_request(void *args) {
 											}
 											else if(timeout_return == 0) {
 												gettimeofday(&current_time, NULL); printf("[%.6f][%s] no data to forward to or from client : timeout\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-												//free(request_details_domain);
 												gettimeofday(&current_time, NULL); printf("[%.6f][%s] CLOSING CONNECTION TO DEST...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 												close_connection(destfd);
 												gettimeofday(&current_time, NULL); printf("[%.6f][%s] CLOSING CONNECTION TO CLIENT...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
@@ -2117,22 +2099,22 @@ void *handle_socks_request(void *args) {
 									}
 									else if(timeout_return == 0) {
 										gettimeofday(&current_time, NULL); printf("\n[%.6f][%s] connecting to package destination failed : timeout\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-										//free(request_details_domain);
 										gettimeofday(&current_time, NULL); printf("[%.6f][%s] CLOSING CONNECTION TO CLIENT...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 										close_connection(clientfd);
+										free(request_details_domain);
 										return NULL;
 									}
 								}
-								//free(request_details_domain);
 								gettimeofday(&current_time, NULL); printf("[%.6f][%s] CLOSING CONNECTION TO CLIENT...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 								close_connection(clientfd);
+								free(request_details_domain);
 								return NULL;
 							}
 							else if(timeout_return == 0) { // answer didn't came in after 10 secs
 								gettimeofday(&current_time, NULL); printf("[%.6f][%s] no further input from %s:%u : timeout\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), client_ip, ntohs(clientaddr.sin_port), random_string);
-								//free(request_details_domain);
 								gettimeofday(&current_time, NULL); printf("[%.6f][%s] CLOSING CONNECTION TO CLIENT...\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 								close_connection(clientfd);
+								free(request_details_domain);
 								return NULL;
 							}
 						} else { // requested address type is not IPv4 or DOMAIN
