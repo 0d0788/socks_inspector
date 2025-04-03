@@ -29,6 +29,8 @@
 #define BUFFERSIZE 65536	// size of the used buffers in bytes (max IPv4 package size)
 							// 65536 bytes is 64 Kibibyte, which is the max. IPv4 package size
 
+#define TIMEOUT 10000		// timeout in msecs used when waiting for replys
+
 int open_socket(bool listening_socket, uint32_t addr, uint16_t port) {
 	// opens a socket and either binds a name or connects it based on the (bool) listen argument
 	int socketfd; // the socket fd returned by the function
@@ -516,7 +518,7 @@ void *handle_socks_request(void *args) {
 	sprintf(client_port, "%u", ntohs(clientaddr.sin_port));
 	inet_ntop(AF_INET, &clientaddr.sin_addr, client_ip, sizeof(client_ip)); // convert client ip to string
 	gettimeofday(&current_time, NULL); printf("[%.6f][%s] (ACK) CONNECTION REQUEST ACCEPTED from %s:%u\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string, client_ip, ntohs(clientaddr.sin_port));
-	timeout_return = timeout(clientfd, POLLIN, 5000); // wait 5 seconds for the SOCKS5 greeting from client
+	timeout_return = timeout(clientfd, POLLIN, TIMEOUT); // wait for the SOCKS5 greeting from client
 	if(timeout_return & POLLIN) { // there is a package from a connected client
 		gettimeofday(&current_time, NULL); printf("[%.6f][%s] starting SOCKS5 handshake for %s:%u\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string, client_ip, ntohs(clientaddr.sin_port));
 		if(read(clientfd, package, BUFFERSIZE) < 0) {
@@ -557,7 +559,7 @@ void *handle_socks_request(void *args) {
 						exit(-1); // unknown write() error
 					}
 				}
-				timeout_return = timeout(clientfd, POLLIN, 5000); // wait max 5 seconds for an answer from the client (the request details)
+				timeout_return = timeout(clientfd, POLLIN, TIMEOUT); // wait for an answer from the client (the request details)
 				if(timeout_return & POLLIN) { // request details came in from client
 					memset(package, 0, BUFFERSIZE);
 					if((readbytes = read(clientfd, package, BUFFERSIZE)) < 0) { // read the request details into buffer
@@ -598,7 +600,7 @@ void *handle_socks_request(void *args) {
 									exit(-1); // unknown write() error
 								}
 							}
-							timeout_return = timeout(clientfd, POLLIN, 5000); // wait 5 seconds for an answer (the actual package to echo and/or decrypt and/or forward)
+							timeout_return = timeout(clientfd, POLLIN, TIMEOUT); // wait for an answer (the actual package to echo and/or decrypt and/or forward)
 							if(timeout_return & POLLIN) { // the request came in
 								memset(package, 0, BUFFERSIZE); // zero out buffer to avoid garbage data
 								if(tls_decrypt_enabled == true) { // check if decryption is enabled
@@ -663,7 +665,7 @@ void *handle_socks_request(void *args) {
 										// TLS handshake complete
 										printf("done!\n");
 										gettimeofday(&current_time, NULL); printf("[%.6f][%s] waiting for the actual request to decrypt...", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-										timeout_return = timeout(clientfd, POLLIN, 5000);
+										timeout_return = timeout(clientfd, POLLIN, TIMEOUT);
 										if(timeout_return & POLLIN) {
 											memset(package, 0, BUFFERSIZE); // zero out buffer to avoid garbage data
 											while((ssl_rtrn = SSL_read_ex(tls_client, package, BUFFERSIZE, &readbytes)) != 1) {
@@ -762,7 +764,7 @@ void *handle_socks_request(void *args) {
 										gettimeofday(&current_time, NULL); printf("[%.6f][%s] CONNECTING TO DEST... ", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
 										destfd = open_socket((bool) false, dest_addr, dest_port); // create destination socket and connect it to destination
 									}
-									timeout_return = timeout(destfd, POLLOUT, 5000);
+									timeout_return = timeout(destfd, POLLOUT, TIMEOUT);
 									if(timeout_return & POLLOUT) { // wait for the destfd socket to become writeable (connected)
 										printf("done!\n");
 										if(forward_to_proxy == true) {
@@ -794,7 +796,7 @@ void *handle_socks_request(void *args) {
 												}
 											}
 											free(proxy_greeting);
-											timeout_return = timeout(destfd, POLLIN, 5000); // wait for socks5 method selection from the proxy
+											timeout_return = timeout(destfd, POLLIN, TIMEOUT); // wait for socks5 method selection from the proxy
 											if(timeout_return & POLLIN) { // answer came in
 												unsigned char handshake_buffer[1024];
 												memset(handshake_buffer, 0, sizeof(handshake_buffer));
@@ -857,7 +859,7 @@ void *handle_socks_request(void *args) {
 														exit(-1); // unknown send() error
 													}
 												}
-												timeout_return = timeout(destfd, POLLIN, 5000); // wait for socks5 request reply from the proxy
+												timeout_return = timeout(destfd, POLLIN, TIMEOUT); // wait for socks5 request reply from the proxy
 												if(timeout_return & POLLIN) { // answer came in
 													memset(handshake_buffer, 0, sizeof(handshake_buffer));
 													read_rtrn = read(destfd, handshake_buffer, sizeof(handshake_buffer)); // try to read() a answer from proxy
@@ -1028,7 +1030,7 @@ void *handle_socks_request(void *args) {
 										fds[1].fd = clientfd;
 										fds[1].events = POLLIN | POLLRDHUP;
 										while(1) {
-											timeout_return = poll(fds, 2, 5000);
+											timeout_return = poll(fds, 2, TIMEOUT);
 											if(timeout_return > 0) {
 												if(fds[0].revents & POLLIN) {
 													memset(package, 0, BUFFERSIZE); // zero out package buffer to avoid garbage data
@@ -1379,7 +1381,7 @@ void *handle_socks_request(void *args) {
 									exit(-1); // unknown write() error
 								}
 							}
-							timeout_return = timeout(clientfd, POLLIN, 5000); // wait 5 seconds for an answer (the actual package to echo and/or decrypt and/or forward)
+							timeout_return = timeout(clientfd, POLLIN, TIMEOUT); // wait 5 seconds for an answer (the actual package to echo and/or decrypt and/or forward)
 							if(timeout_return & POLLIN) { // the answer came in
 								memset(package, 0, BUFFERSIZE);
 								if(tls_decrypt_enabled == true) { // check if decryption is enabled
@@ -1445,7 +1447,7 @@ void *handle_socks_request(void *args) {
 										// TLS handshake complete
 										printf("done!\n");
 										gettimeofday(&current_time, NULL); printf("[%.6f][%s] waiting for the actual request to decrypt...", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), random_string);
-										timeout_return = timeout(clientfd, POLLIN, 5000);
+										timeout_return = timeout(clientfd, POLLIN, TIMEOUT);
 										if(timeout_return & POLLIN) {
 											memset(package, 0, BUFFERSIZE); // zero out buffer to avoid garbage data
 											while((ssl_rtrn = SSL_read_ex(tls_client, package, BUFFERSIZE, &readbytes)) != 1) {
@@ -1597,7 +1599,7 @@ void *handle_socks_request(void *args) {
 										}
 										freeaddrinfo(dst_info);
 									}
-									timeout_return = timeout(destfd, POLLOUT, 5000);
+									timeout_return = timeout(destfd, POLLOUT, TIMEOUT);
 									if(timeout_return & POLLOUT) { // wait for the destfd socket to become writeable (connected)
 										printf("done!\n");
 										if(forward_to_proxy == true) {
@@ -1630,7 +1632,7 @@ void *handle_socks_request(void *args) {
 												}
 											}
 											free(proxy_greeting);
-											timeout_return = timeout(destfd, POLLIN, 5000); // wait for socks5 method selection from the proxy
+											timeout_return = timeout(destfd, POLLIN, TIMEOUT); // wait for socks5 method selection from the proxy
 											if(timeout_return & POLLIN) { // answer came in
 												unsigned char handshake_buffer[1024];
 												memset(handshake_buffer, 0, sizeof(handshake_buffer));
@@ -1698,7 +1700,7 @@ void *handle_socks_request(void *args) {
 													}
 												}
 												free(request_details_domain);
-												timeout_return = timeout(destfd, POLLIN, 5000); // wait for socks5 request reply from the proxy
+												timeout_return = timeout(destfd, POLLIN, TIMEOUT); // wait for socks5 request reply from the proxy
 												if(timeout_return & POLLIN) { // answer came in
 													memset(handshake_buffer, 0, sizeof(handshake_buffer));
 													read_rtrn = read(destfd, handshake_buffer, sizeof(handshake_buffer)); // try to read() a answer from proxy
@@ -1842,7 +1844,7 @@ void *handle_socks_request(void *args) {
 										fds[1].fd = clientfd;
 										fds[1].events = POLLIN | POLLRDHUP;
 										while(1) {
-											timeout_return = poll(fds, 2, 5000);
+											timeout_return = poll(fds, 2, TIMEOUT);
 											if(timeout_return > 0) {
 												if(fds[0].revents & POLLIN) {
 													memset(package, 0, BUFFERSIZE); // zero out package buffer to avoid garbage data
