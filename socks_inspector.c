@@ -110,69 +110,6 @@ void hexdump(unsigned char *buffer, size_t bufferlen) {
 	printf("\n");
 }
 
-size_t editbuffer_new(unsigned char *buffer, size_t bufferlen, char *randvalue) { // new edit function (using external text editor)
-	char selection;
-	while(1) {
-		printf("edit this package or skip? (y/n): "); scanf("%c", &selection);
-		getchar(); // consume newline to clear STDIN
-		if(selection == 'y' || selection == 'Y') { // selection is yes
-			char *editor = getenv("EDITOR"); // get the text editor set in EDITOR env variable
-			char path[strlen("/dev/shm/") + strlen(randvalue) + strlen(".tmp") + 1];
-			strcpy(path, "/dev/shm/");
-			strcat(path, randvalue);
-			strcat(path, ".tmp");
-			FILE *tmp;
-			tmp = fopen(path, "w"); // open (create) the tmp file
-			for(int bufferlen_count = 0; bufferlen_count < bufferlen; bufferlen_count = bufferlen_count+16) {
-				for(int count = 0; count < 16 && (count+bufferlen_count) < bufferlen; count++) {
-					fprintf(tmp, "%02X", buffer[bufferlen_count+count]);
-					if(count < 15 && (count+bufferlen_count) < (bufferlen-1)) {
-						fprintf(tmp, " ");
-					}
-				}
-				fprintf(tmp, "\n");
-			}
-			fflush(tmp);
-			fclose(tmp);
-			char cmd[strlen(editor) + strlen(path) + 2];
-			memset(cmd, 0, sizeof(cmd));
-			strcpy(cmd, editor);
-			strcat(cmd, " ");
-			strcat(cmd, path);
-			system(cmd);
-			tmp = fopen(path, "r"); // reopen the file
-			struct stat st;
-			fstat(fileno(tmp), &st);
-			unsigned char tmpbuffer[st.st_size], *tmpbuffer_pos = tmpbuffer;
-			memset(tmpbuffer, 0, sizeof(tmpbuffer));
-			size_t tmplen = fread(tmpbuffer, 1, st.st_size, tmp);
-			fclose(tmp);
-			memset(buffer, 0, BUFFERSIZE);
-			int x = 0;
-			int y = 0;
-			while(y < tmplen && x < BUFFERSIZE) {
-				while(*tmpbuffer_pos == '\n' || *tmpbuffer_pos == ' ') {
-					tmpbuffer_pos++; // move past space or newline (dont copy them)
-					y++;
-				}
-				// convert the hex string into binary
-				if(sscanf(tmpbuffer_pos, "%02X", (buffer+x)) == 1) {
-					tmpbuffer_pos += 2; // move past the copied two digit hex value
-					y += 2;
-					x++; // move to next index in dst buffer
-				} else {
-					tmpbuffer_pos++; // Skip invalid chars
-					y++;
-				}
-			}
-			return (x+1); // return the new len of the buffer (+1 because len starting from index 1 (size in bytes) and not 0)
-		}
-		else if(selection == 'n' || selection == 'N') { // selection is no
-			return 0;
-		}
-	}
-}
-
 void editbuffer(unsigned char *buffer, size_t bufferlen) { // not memory safe the buffers can simply overflow (deprecated, replaced by editbuffer_new)
 	char selection;
 	while(1) {
@@ -247,6 +184,96 @@ void editbuffer(unsigned char *buffer, size_t bufferlen) { // not memory safe th
 		}
 		else if(selection == 's' || selection == 'S') {
 			return;
+		}
+	}
+}
+
+size_t editbuffer_new(unsigned char *buffer, size_t bufferlen, char *randvalue) { // new edit function (using external text editor)
+	char selection;
+	while(1) {
+		printf("edit this package or skip? (y/n): "); scanf("%c", &selection);
+		getchar(); // consume newline to clear STDIN
+		if(selection == 'y' || selection == 'Y') { // selection is yes
+			char *editor = getenv("EDITOR"); // get the text editor set in EDITOR env variable
+			char path[strlen("/dev/shm/") + strlen(randvalue) + strlen(".tmp") + 1];
+			strcpy(path, "/dev/shm/");
+			strcat(path, randvalue);
+			strcat(path, ".tmp");
+			FILE *tmp;
+			tmp = fopen(path, "w"); // open (create) the tmp file
+			for(int bufferlen_count = 0; bufferlen_count < bufferlen; bufferlen_count = bufferlen_count+16) {
+				for(int count = 0; count < 16 && (count+bufferlen_count) < bufferlen; count++) {
+					fprintf(tmp, "%02X", buffer[bufferlen_count+count]);
+					if(count < 15 && (count+bufferlen_count) < (bufferlen-1)) {
+						fprintf(tmp, " ");
+					}
+				}
+				fprintf(tmp, "\n");
+			}
+			fflush(tmp);
+			fclose(tmp);
+			void no_env() {
+				char cmd[strlen("nano ") + strlen(path) + 2];
+				memset(cmd, 0, sizeof(cmd));
+				strcpy(cmd, "nano ");
+				strcat(cmd, path);
+				if(system(cmd) != 0) {
+					printf("error! falling back to editbuffer()\n");
+					editbuffer(buffer, bufferlen);
+				}
+				return;
+			}
+			if(editor == NULL) {
+				printf("$EDITOR env var not set : trying nano\n");
+				sleep(2); // sleep a bit so one can see the error
+				no_env();
+				return 0;
+			}
+			if((strcmp(editor, "") == 0) || (strcmp(editor, " ") == 0)) {
+				printf("$EDITOR env var exists but is empty : trying nano\n");
+				sleep(2);
+				no_env();
+				return 0;
+			}
+			char cmd[strlen(editor) + strlen(path) + 2];
+			memset(cmd, 0, sizeof(cmd));
+			strcpy(cmd, editor);
+			strcat(cmd, " ");
+			strcat(cmd, path);
+			if(system(cmd) != 0) {
+				printf("error! falling back to editbuffer()\n");
+				editbuffer(buffer, bufferlen);
+				return 0;
+			}
+			tmp = fopen(path, "r"); // reopen the file
+			struct stat st;
+			fstat(fileno(tmp), &st);
+			unsigned char tmpbuffer[st.st_size], *tmpbuffer_pos = tmpbuffer;
+			memset(tmpbuffer, 0, sizeof(tmpbuffer));
+			size_t tmplen = fread(tmpbuffer, 1, st.st_size, tmp);
+			fclose(tmp);
+			memset(buffer, 0, BUFFERSIZE);
+			int x = 0;
+			int y = 0;
+			while(y < tmplen && x < BUFFERSIZE) {
+				while(*tmpbuffer_pos == '\n' || *tmpbuffer_pos == ' ') {
+					tmpbuffer_pos++; // move past space or newline (dont copy them)
+					y++;
+				}
+				// convert the hex string into binary
+				if(sscanf(tmpbuffer_pos, "%02X", (buffer+x)) == 1) {
+					tmpbuffer_pos += 2; // move past the copied two digit hex value
+					y += 2;
+					x++; // move to next index in dst buffer
+				} else {
+					tmpbuffer_pos++; // Skip invalid chars
+					y++;
+				}
+			}
+			return (x+1); // return the new len of the buffer (+1 because len starting from index 1 (size in bytes) and not 0)
+		}
+		else if(selection == 'n' || selection == 'N') { // selection is no
+			return 0;
 		}
 	}
 }
