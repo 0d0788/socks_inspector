@@ -2252,8 +2252,27 @@ int main(int argc, char *argv[]) {
 	args->start_time = start_time;
 	int argv_pos = check_argv(argc, argv, "--port");
 	if(argv_pos == -1) {
-		gettimeofday(&current_time, NULL); printf("[%.6f] no port number specified: using default value 1080\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
-		listenfd = open_socket((bool) true, INADDR_ANY, (uint16_t) htons(1080));
+		char *port = getenv("INSPECTOR_PORT"); // get the text editor set in EDITOR env variable
+		if(port == NULL || (strcmp(port, "") == 0) || (strcmp(port, " ") == 0)) {
+			gettimeofday(&current_time, NULL); printf("[%.6f] no port number specified: using default value 1080\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+			listenfd = open_socket((bool) true, INADDR_ANY, (uint16_t) htons(1080));
+		} else {
+			char *s = port;
+			while (*s) { // check if that value is an actual port (numeric) and not something else
+				if(isdigit(*s) == 0) {
+					gettimeofday(&current_time, NULL); printf("[%.6f] port number in $INSPECTOR_PORT env var is not numeric : returning\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+					exit(1);
+				}
+				s++;
+			}
+			int listen_port = atoi(port); // the argument after the found --port is used as port number
+			if(listen_port > 65535) { // check if the selected port is higher than the max port
+				gettimeofday(&current_time, NULL); printf("[%.6f] port number in $INSPECTOR_PORT env var is higher than 65535 (max port) : returning\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+				exit(1);
+			}
+			gettimeofday(&current_time, NULL); printf("[%.6f] using port number : %u\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), listen_port);
+			listenfd = open_socket((bool) true, INADDR_ANY, htons(listen_port));
+		}
 	} else {
 		if(argc < argv_pos+2) { // check if there is value after --port argument
 			gettimeofday(&current_time, NULL); printf("[%.6f] no port number after --port argument : returning\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
@@ -2264,9 +2283,8 @@ int main(int argc, char *argv[]) {
 				if(isdigit(*s) == 0) {
 					gettimeofday(&current_time, NULL); printf("[%.6f] port number after --port argument is not numeric : returning\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
 					exit(1);
-				} else {
-					s++;
 				}
+				s++;
 			}
 			int listen_port = atoi(argv[argv_pos+1]); // the argument after the found --port is used as port number
 			if(listen_port > 65535) { // check if the selected port is higher than the max port
@@ -2277,12 +2295,35 @@ int main(int argc, char *argv[]) {
 			listenfd = open_socket((bool) true, INADDR_ANY, htons(listen_port));
 		}
 	}
-	//char *logpath = NULL;
 	argv_pos = check_argv(argc, argv, "--log");
 	if(argv_pos == -1) {
-		gettimeofday(&current_time, NULL); printf("[%.6f] logging disabled : --log not set\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
-		args->logging_enabled = false;
-		args->logpath = NULL;
+		char *log_env = getenv("INSPECTOR_LOGPATH"); // get the text editor set in EDITOR env variable
+		if(log_env == NULL || (strcmp(log_env, "") == 0) || (strcmp(log_env, " ") == 0)) {
+			gettimeofday(&current_time, NULL); printf("[%.6f] logging disabled : not logpath specified\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+			args->logging_enabled = false;
+			args->logpath = NULL;
+		} else {
+			if(opendir(log_env) == NULL) { // check if the dir in $INSPECTOR_LOGPATH env var is valid
+				switch(errno) {
+					case EACCES:
+						gettimeofday(&current_time, NULL); printf("[%.6f] permission denied to open dir in $INSPECTOR_LOGPATH env var : returning\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+						exit(1);
+					case ENOENT:
+						gettimeofday(&current_time, NULL); printf("[%.6f] dir in $INSPECTOR_LOGPATH env var does not exist : returning\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+						exit(1);
+					case ENOTDIR:
+						gettimeofday(&current_time, NULL); printf("[%.6f] dir $INSPECTOR_LOGPATH env var is not a dir : returning\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+						exit(1);
+					default:
+						exit(-1); // unknown opendir() error
+				}
+			} else { // is usable
+				args->logpath = (char *) malloc(strlen(log_env)+1);
+				strcpy(args->logpath, log_env);
+				args->logging_enabled = true;
+				gettimeofday(&current_time, NULL); printf("[%.6f] logging enabled : writing to %s\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), args->logpath);
+			}
+		}
 	} else {
 		// logging enabled
 		if(argc < argv_pos+2) { // check if there is something after --log argument
@@ -2307,7 +2348,7 @@ int main(int argc, char *argv[]) {
 				args->logpath = (char *) malloc(strlen(argv[argv_pos+1])+1);
 				strcpy(args->logpath, argv[argv_pos+1]);
 				args->logging_enabled = true;
-				gettimeofday(&current_time, NULL); printf("[%.6f] logging enabled : writing to %s\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), argv[argv_pos+1]);
+				gettimeofday(&current_time, NULL); printf("[%.6f] logging enabled : writing to %s\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), args->logpath);
 			}
 		}
 	}
@@ -2359,9 +2400,20 @@ int main(int argc, char *argv[]) {
 	}
 	argv_pos = check_argv(argc, argv, "--CN");
 	if(argv_pos == -1) {
-		if(args->tls_decrypt_enabled == true) {
-			gettimeofday(&current_time, NULL); printf("[%.6f] no X509 COMMON NAME specified : using default value\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
-			args->CN = "localhost";
+		char *CN_env = getenv("INSPECTOR_X509_CN"); // get the text editor set in EDITOR env variable
+		if(CN_env == NULL || (strcmp(CN_env, "") == 0) || (strcmp(CN_env, " ") == 0)) {
+			if(args->tls_decrypt_enabled == true) {
+				gettimeofday(&current_time, NULL); printf("[%.6f] no X509 COMMON NAME specified : using default value\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+				args->CN = "localhost";
+			}
+		} else {
+			if(args->tls_decrypt_enabled == true) {
+				args->CN = CN_env;
+				gettimeofday(&current_time, NULL); printf("[%.6f] using X509 COMMON NAME %s\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), args->CN);
+			} else {
+				gettimeofday(&current_time, NULL); printf("[%.6f] ignoring CN env var : only used when --tls-decrypt is set\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+				args->CN = NULL;
+			}
 		}
 	} else {
 		if(argc < argv_pos+2) {
@@ -2378,9 +2430,20 @@ int main(int argc, char *argv[]) {
 	}
 	argv_pos = check_argv(argc, argv, "--SAN");
 	if(argv_pos == -1) {
-		if(args->tls_decrypt_enabled == true) {
-			gettimeofday(&current_time, NULL); printf("[%.6f] no X509 SAN specified : using default value\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
-			args->SAN = "localhost";
+		char *SAN_env = getenv("INSPECTOR_X509_SAN"); // get the text editor set in EDITOR env variable
+		if(SAN_env == NULL || (strcmp(SAN_env, "") == 0) || (strcmp(SAN_env, " ") == 0)) {
+			if(args->tls_decrypt_enabled == true) {
+				gettimeofday(&current_time, NULL); printf("[%.6f] no X509 SAN specified : using default value\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+				args->SAN = "localhost";
+			}
+		} else {
+			if(args->tls_decrypt_enabled == true) {
+				args->SAN = SAN_env;
+				gettimeofday(&current_time, NULL); printf("[%.6f] using X509 SAN %s\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0), args->SAN);
+			} else {
+				gettimeofday(&current_time, NULL); printf("[%.6f] ignoring SAN env var : only used when --tls-decrypt is set\n", ((double) (current_time.tv_sec - start_time.tv_sec) + (current_time.tv_usec - start_time.tv_usec) / 1000000.0));
+				args->SAN = NULL;
+			}
 		}
 	} else {
 		if(argc < argv_pos+2) {
